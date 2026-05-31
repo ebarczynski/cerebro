@@ -506,6 +506,61 @@ fn reindex(state: State<AppState>) -> Result<serde_json::Value, String> {
 
 // ── Entry Point ────────────────────────────────────────────────
 
+// ── Image / Attachment Commands ────────────────────────────────
+
+#[tauri::command]
+fn save_image(state: State<AppState>, file_name: String, data: String) -> Result<String, String> {
+    use base64::Engine;
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let attachments_dir = storage.attachments_dir();
+    std::fs::create_dir_all(&attachments_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let safe_name = file_name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
+    let unique_name = format!("{}_{}", timestamp, safe_name);
+    let file_path = attachments_dir.join(&unique_name);
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+
+    std::fs::write(&file_path, decoded).map_err(|e| e.to_string())?;
+
+    Ok(format!("attachments/{}", unique_name))
+}
+
+#[tauri::command]
+fn read_image_as_base64(state: State<AppState>, path: String) -> Result<String, String> {
+    use base64::Engine;
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let file_path = storage.notes_dir_path().join(&path);
+    let data = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+}
+
+// ── Text Attachment Commands ──────────────────────────────────
+
+#[tauri::command]
+fn read_attachment_text(state: State<AppState>, path: String) -> Result<String, String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+    let file_path = storage.notes_dir_path().join(&path);
+    let content = std::fs::read_to_string(&file_path).map_err(|e| {
+        format!("Failed to read {}: {}", file_path.display(), e)
+    })?;
+    Ok(content)
+}
+
+// ── Entry Point ────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = Config::load().unwrap_or_else(|_| {
@@ -547,6 +602,9 @@ pub fn run() {
             kp_search,
             kp_health,
             reindex,
+            save_image,
+            read_image_as_base64,
+            read_attachment_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cerebro");

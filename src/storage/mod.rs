@@ -86,6 +86,18 @@ impl Storage {
         &self.profile_name
     }
 
+    /// Returns the path to the notes directory.
+    pub fn notes_dir_path(&self) -> &Path {
+        &self.notes_dir
+    }
+
+    /// Returns (and creates if needed) the attachments directory under notes_dir.
+    pub fn attachments_dir(&self) -> PathBuf {
+        let dir = self.notes_dir.join("attachments");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
     // ── Migrations ────────────────────────────────────────────────
 
     fn run_migrations(&self) -> Result<()> {

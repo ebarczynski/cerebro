@@ -19,6 +19,7 @@
     "@uiw/react-codemirror": "^4",
     "codemirror": "^6",
     "d3": "^7",
+    "highlight.js": "^11.11.1",
     "marked": "^15",
     "react": "^19",
     "react-dom": "^19"

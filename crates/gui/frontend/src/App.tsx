@@ -55,10 +55,92 @@ function MarkdownPreview({ content }: { content: string }) {
   const [html, setHtml] = useState("");
 
   useEffect(() => {
-    import("marked").then(({ marked }) => {
+    Promise.all([
+      import("marked"),
+      import("highlight.js"),
+    ]).then(async ([{ marked }, hljsModule]) => {
+      const hljs = hljsModule.default;
       try {
-        const result = marked.parse(content, { async: false }) as string;
-        setHtml(result);
+        // Custom image renderer for vault attachments
+        const renderer = new marked.Renderer();
+
+        // Store vault image paths for async loading after initial parse
+        const vaultImagePaths: string[] = [];
+        const vaultExcalidrawPaths: string[] = [];
+
+        const originalImage = renderer.image.bind(renderer);
+        renderer.image = function(token: any) {
+          const href: string = token.href || "";
+          if (href.endsWith('.excalidraw')) {
+            vaultExcalidrawPaths.push(href);
+            return `<div class="excalidraw-placeholder" data-excalidraw-path="${href}">Loading diagram...</div>`;
+          }
+          if (href.startsWith("attachments/")) {
+            vaultImagePaths.push(href);
+            return `<img src="${href}" alt="${token.text || ""}" loading="lazy" class="vault-image" data-vault-path="${href}" />`;
+          }
+          return originalImage.call(renderer, token);
+        };
+
+        // Syntax highlighting for fenced code blocks
+        renderer.code = function(token: any) {
+          const code = token.text || "";
+          const lang = token.lang || "";
+
+          let highlighted: string;
+          try {
+            if (lang && hljs.getLanguage(lang)) {
+              highlighted = hljs.highlight(code, { language: lang }).value;
+            } else {
+              highlighted = hljs.highlightAuto(code).value;
+            }
+          } catch {
+            highlighted = code;
+          }
+
+          const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
+          return `<div class="code-block-wrapper">${langLabel}<pre><code class="hljs language-${lang}">${highlighted}</code></pre></div>`;
+        };
+
+        const result = await marked.parse(content, { async: false, renderer } as any) as unknown as string;
+
+        // Post-process: load vault images as base64
+        let processed = result;
+        if (vaultImagePaths.length > 0) {
+          for (const path of vaultImagePaths) {
+            try {
+              const base64 = await invoke<string>("read_image_as_base64", { path });
+              const ext = path.split('.').pop()?.toLowerCase();
+              const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+              processed = processed.replace(`src="${path}"`, `src="data:${mime};base64,${base64}"`);
+            } catch (e) {
+              console.error("Failed to load image:", path, e);
+            }
+          }
+        }
+
+        // Post-process: load excalidraw diagrams as inline SVG
+        if (vaultExcalidrawPaths.length > 0) {
+          const { excalidrawToSvg } = await import("./utils/excalidrawToSvg");
+          for (const path of vaultExcalidrawPaths) {
+            try {
+              const json = await invoke<string>("read_attachment_text", { path });
+              const svgHtml = excalidrawToSvg(json);
+              processed = processed.replace(
+                `<div class="excalidraw-placeholder" data-excalidraw-path="${path}">Loading diagram...</div>`,
+                svgHtml
+              );
+            } catch (e) {
+              console.error("Failed to load excalidraw:", path, e);
+              processed = processed.replace(
+                `<div class="excalidraw-placeholder" data-excalidraw-path="${path}">Loading diagram...</div>`,
+                `<div style="padding:12px;color:#ef4444;font-size:13px;border:1px solid #2a2a3a;border-radius:8px;">Failed to load diagram: ${path}</div>`
+              );
+            }
+          }
+        }
+
+        setHtml(processed);
       } catch {
         setHtml(`<pre>${content}</pre>`);
       }
@@ -473,12 +555,19 @@ export default function App() {
 
   const handleReindex = useCallback(async () => {
     try {
-      await invoke("reindex");
-      await loadVault(activeProfile?.name);
+      const stats = await invoke<{created: number, updated: number, removed: number, errors: number}>("reindex");
+      // Just reload notes and tags without reopening vault
+      const [notesList, tagsList] = await Promise.all([
+        invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+        invoke<TagInfo[]>("list_tags"),
+      ]);
+      setNotes(notesList);
+      setTags(tagsList);
+      console.log("Reindex complete:", stats);
     } catch (e) {
       console.error("Reindex failed:", e);
     }
-  }, [activeProfile, loadVault]);
+  }, []);
 
   // ── Keyboard shortcuts ─────────────────────────────────────
 

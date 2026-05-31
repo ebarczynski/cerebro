@@ -10,6 +10,7 @@ import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } 
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { Extension, EditorState } from '@codemirror/state';
+import { invoke } from "@tauri-apps/api/core";
 
 interface EditorProps {
   value: string;
@@ -164,6 +165,77 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     },
   ]);
 
+  // Image paste and drag-drop handler
+  const imageHandlers = EditorView.domEventHandlers({
+    paste(event) {
+      const items = event.clipboardData?.items;
+      if (!items) return false;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          event.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const base64 = (reader.result as string).split(',')[1];
+            try {
+              const imagePath = await invoke<string>("save_image", {
+                fileName: file.name || `paste_${Date.now()}.png`,
+                data: base64,
+              });
+              const view = cmRef.current?.view;
+              if (view) {
+                const cursor = view.state.selection.main.head;
+                view.dispatch({
+                  changes: { from: cursor, insert: `\n![image](${imagePath})\n` }
+                });
+              }
+            } catch (e) {
+              console.error("Failed to save pasted image:", e);
+            }
+          };
+          reader.readAsDataURL(file);
+          return true;
+        }
+      }
+      return false;
+    },
+    drop(event) {
+      const files = event.dataTransfer?.files;
+      if (!files || files.length === 0) return false;
+
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          event.preventDefault();
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const base64 = (reader.result as string).split(',')[1];
+            try {
+              const imagePath = await invoke<string>("save_image", {
+                fileName: file.name,
+                data: base64,
+              });
+              const view = cmRef.current?.view;
+              if (view) {
+                const cursor = view.state.selection.main.head;
+                view.dispatch({
+                  changes: { from: cursor, insert: `\n![${file.name}](${imagePath})\n` }
+                });
+              }
+            } catch (e) {
+              console.error("Failed to save dropped image:", e);
+            }
+          };
+          reader.readAsDataURL(file);
+          return true;
+        }
+      }
+      return false;
+    },
+  });
+
   const extensions: Extension[] = [
     cerebroTheme,
     cerebroHighlightStyle,
@@ -194,6 +266,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
       indentWithTab,
     ]),
     saveKeymap,
+    imageHandlers,
   ];
 
   if (readOnly) {

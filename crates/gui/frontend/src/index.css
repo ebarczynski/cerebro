@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import 'highlight.js/styles/github-dark.css';
 
 /* ── Cerebro Dark Theme ──────────────────────────────────────── */
 
@@ -151,6 +152,53 @@ html, body, #root {
   padding: 0;
 }
 
+.markdown-preview .code-block-wrapper {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--cerebro-border, #2a2a3a);
+}
+
+.markdown-preview .code-lang {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 11px;
+  color: #52525b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  z-index: 1;
+  font-family: inherit;
+}
+
+.markdown-preview pre {
+  margin: 0;
+  padding: 16px;
+  background: #12121a !important;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.markdown-preview code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.markdown-preview :not(pre) > code {
+  background: #1a1a25;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #c4b5fd;
+  font-size: 0.9em;
+}
+
+.markdown-preview pre code.hljs {
+  background: transparent !important;
+  padding: 0;
+}
+
 .markdown-preview blockquote {
   border-left: 3px solid var(--cerebro-accent);
   padding-left: 16px;
@@ -169,7 +217,18 @@ html, body, #root {
 
 .markdown-preview img {
   max-width: 100%;
+  height: auto;
   border-radius: 8px;
+  margin: 8px 0;
+  border: 1px solid var(--cerebro-border);
+}
+
+.markdown-preview img.vault-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 8px 0;
+  border: 1px solid var(--cerebro-border);
 }
 
 .markdown-preview table {
@@ -190,6 +249,18 @@ html, body, #root {
 }
 
 /* ── Animations ──────────────────────────────────────────────── */
+
+.excalidraw-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+  background: #12121a;
+  border: 1px solid #2a2a3a;
+  border-radius: 8px;
+  color: #8888a0;
+  font-size: 13px;
+}
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
