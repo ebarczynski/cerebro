@@ -1,0 +1,21 @@
+# Build
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cerebro runtime
+db.sqlite
+db.sqlite-wal
+db.sqlite-shm
+tantivy/

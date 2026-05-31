@@ -1,0 +1,73 @@
+[package]
+name = "cerebro"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
+license = "MIT"
+authors = ["Ed Barczynski"]
+repository = "https://github.com/ebarczynski/cerebro"
+keywords = ["knowledge-base", "notes", "markdown", "mcp", "search"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "cerebro"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Database
+rusqlite = { version = "0.34", features = ["bundled", "functions", "column_decltype"] }
+
+# Search
+tantivy = "0.22"
+
+# Markdown
+pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Crypto & Hashing
+sha2 = "0.10"
+aes-gcm = "0.10"
+argon2 = "0.5"
+
+# Graph
+petgraph = "0.7"
+
+# HTTP (KP connector, Confluence, MCP HTTP)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Utilities
+uuid = { version = "1", features = ["v7", "serde"] }
+walkdir = "2"
+notify = { version = "7", features = ["macos_fsevent"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+dirs = "6"
+open = "5"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+criterion = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1

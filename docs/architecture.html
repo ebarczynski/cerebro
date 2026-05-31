@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cerebro — Knowledge Base Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Cerebro — Personal Knowledge Base Architecture</h1>
+      </div>
+      <p class="subtitle">Rust · SQLite + Tantivy · Dual-Profile Vaults · MCP Server · Knowledge Palace Connector</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1100 820">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrow-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrow-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrow-violet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <marker id="arrow-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <!-- Background Grid -->
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ EXTERNAL CLIENTS (top) ============ -->
+
+        <!-- GitHub Copilot -->
+        <rect x="30" y="30" width="130" height="55" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="95" y="52" fill="white" font-size="11" font-weight="600" text-anchor="middle">GitHub Copilot</text>
+        <text x="95" y="68" fill="#94a3b8" font-size="8" text-anchor="middle">VS Code / VSIX Extension</text>
+
+        <!-- Hermes Agent -->
+        <rect x="200" y="30" width="130" height="55" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="265" y="52" fill="white" font-size="11" font-weight="600" text-anchor="middle">Hermes Agent</text>
+        <text x="265" y="68" fill="#94a3b8" font-size="8" text-anchor="middle">MCP Client (stdio)</text>
+
+        <!-- CLI User -->
+        <rect x="370" y="30" width="130" height="55" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="435" y="52" fill="white" font-size="11" font-weight="600" text-anchor="middle">CLI User</text>
+        <text x="435" y="68" fill="#94a3b8" font-size="8" text-anchor="middle">cerebro search ...</text>
+
+        <!-- Confluence -->
+        <rect x="920" y="30" width="140" height="55" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="990" y="52" fill="white" font-size="11" font-weight="600" text-anchor="middle">Confluence</text>
+        <text x="990" y="68" fill="#94a3b8" font-size="8" text-anchor="middle">REST API v2</text>
+
+        <!-- Git Remote -->
+        <rect x="920" y="110" width="140" height="55" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="990" y="132" fill="white" font-size="11" font-weight="600" text-anchor="middle">Git Remote</text>
+        <text x="990" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">Sync &amp; Backup</text>
+
+        <!-- ============ CEREBRO APPLICATION BOUNDARY ============ -->
+        <rect x="30" y="130" width="860" height="480" rx="12" fill="rgba(6, 78, 59, 0.08)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="8,4"/>
+        <text x="46" y="150" fill="#34d399" font-size="11" font-weight="600">CEREBRO — Rust Binary</text>
+
+        <!-- ============ INTERFACE LAYER ============ -->
+
+        <!-- MCP Server -->
+        <rect x="50" y="170" width="150" height="55" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="125" y="192" fill="white" font-size="11" font-weight="600" text-anchor="middle">MCP Server</text>
+        <text x="125" y="208" fill="#94a3b8" font-size="8" text-anchor="middle">stdio + HTTP/SSE</text>
+
+        <!-- REST API -->
+        <rect x="230" y="170" width="150" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="305" y="192" fill="white" font-size="11" font-weight="600" text-anchor="middle">REST API</text>
+        <text x="305" y="208" fill="#94a3b8" font-size="8" text-anchor="middle">Axum :9090/api/v1/</text>
+
+        <!-- CLI -->
+        <rect x="410" y="170" width="150" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="485" y="192" fill="white" font-size="11" font-weight="600" text-anchor="middle">CLI</text>
+        <text x="485" y="208" fill="#94a3b8" font-size="8" text-anchor="middle">clap derive</text>
+
+        <!-- Confluence Publisher -->
+        <rect x="590" y="170" width="150" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="665" y="192" fill="white" font-size="11" font-weight="600" text-anchor="middle">Confluence Pub</text>
+        <text x="665" y="208" fill="#94a3b8" font-size="8" text-anchor="middle">MD → Storage Format</text>
+
+        <!-- ============ CORE ENGINE BOUNDARY ============ -->
+        <rect x="50" y="260" width="820" height="170" rx="10" fill="rgba(76, 29, 149, 0.08)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="62" y="278" fill="#a78bfa" font-size="9" font-weight="600">CORE ENGINE</text>
+
+        <!-- Vault Manager -->
+        <rect x="70" y="290" width="140" height="55" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="140" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">Vault Manager</text>
+        <text x="140" y="328" fill="#94a3b8" font-size="8" text-anchor="middle">Profile Isolation</text>
+
+        <!-- Note Store -->
+        <rect x="240" y="290" width="140" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="310" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">Note Store</text>
+        <text x="310" y="328" fill="#94a3b8" font-size="8" text-anchor="middle">CRUD + Frontmatter</text>
+
+        <!-- Link Graph -->
+        <rect x="410" y="290" width="140" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="480" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">Link Graph</text>
+        <text x="480" y="328" fill="#94a3b8" font-size="8" text-anchor="middle">petgraph + CTEs</text>
+
+        <!-- Search Engine -->
+        <rect x="580" y="290" width="140" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="650" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">Search Engine</text>
+        <text x="650" y="328" fill="#94a3b8" font-size="8" text-anchor="middle">Tantivy + FTS5</text>
+
+        <!-- MD Parser -->
+        <rect x="750" y="290" width="100" height="55" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="800" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">MD Parser</text>
+        <text x="800" y="328" fill="#94a3b8" font-size="8" text-anchor="middle">pulldown-cmark</text>
+
+        <!-- Core engine internal arrows -->
+        <line x1="210" y1="317" x2="238" y2="317" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+        <line x1="380" y1="317" x2="408" y2="317" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+        <line x1="550" y1="317" x2="578" y2="317" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+        <line x1="720" y1="317" x2="748" y2="317" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+
+        <!-- Sync Engine -->
+        <rect x="70" y="370" width="130" height="45" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="135" y="392" fill="white" font-size="10" font-weight="600" text-anchor="middle">Sync Engine</text>
+        <text x="135" y="405" fill="#94a3b8" font-size="7" text-anchor="middle">Git-based + AES-256</text>
+
+        <!-- Encryption -->
+        <rect x="230" y="370" width="130" height="45" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="295" y="392" fill="white" font-size="10" font-weight="600" text-anchor="middle">Encryption</text>
+        <text x="295" y="405" fill="#94a3b8" font-size="7" text-anchor="middle">AES-256-GCM + Argon2id</text>
+
+        <!-- KP Connector -->
+        <rect x="500" y="370" width="160" height="45" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="580" y="392" fill="white" font-size="10" font-weight="600" text-anchor="middle">KP Connector</text>
+        <text x="580" y="405" fill="#94a3b8" font-size="7" text-anchor="middle">Semantic/RAG via KP API</text>
+
+        <!-- ============ STORAGE LAYER ============ -->
+
+        <!-- Profile: Personal -->
+        <rect x="50" y="470" width="400" height="125" rx="8" fill="rgba(76, 29, 149, 0.08)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="62" y="488" fill="#a78bfa" font-size="9" font-weight="600">PROFILE: Personal</text>
+
+        <rect x="65" y="498" width="110" height="45" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="120" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">SQLite</text>
+        <text x="120" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">FTS5 + Metadata</text>
+
+        <rect x="195" y="498" width="110" height="45" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="250" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">Tantivy</text>
+        <text x="250" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">Full-Text Index</text>
+
+        <rect x="325" y="498" width="110" height="45" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="380" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">notes/*.md</text>
+        <text x="380" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">Source of Truth</text>
+
+        <!-- Profile: Professional -->
+        <rect x="470" y="470" width="400" height="125" rx="8" fill="rgba(251, 191, 36, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="482" y="488" fill="#fbbf24" font-size="9" font-weight="600">PROFILE: Professional</text>
+
+        <rect x="485" y="498" width="110" height="45" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="540" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">SQLite</text>
+        <text x="540" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">FTS5 + Metadata</text>
+
+        <rect x="615" y="498" width="110" height="45" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="670" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">Tantivy</text>
+        <text x="670" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">Full-Text Index</text>
+
+        <rect x="745" y="498" width="110" height="45" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="800" y="518" fill="white" font-size="10" font-weight="600" text-anchor="middle">notes/*.md</text>
+        <text x="800" y="532" fill="#94a3b8" font-size="7" text-anchor="middle">Source of Truth</text>
+
+        <!-- ============ KNOWLEDGE PALACE (external) ============ -->
+        <rect x="350" y="630" width="400" height="110" rx="12" fill="rgba(251, 191, 36, 0.05)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4"/>
+        <text x="362" y="650" fill="#fbbf24" font-size="10" font-weight="600">KNOWLEDGE PALACE</text>
+
+        <rect x="370" y="660" width="110" height="40" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="425" y="678" fill="white" font-size="9" font-weight="600" text-anchor="middle">PostgreSQL</text>
+        <text x="425" y="690" fill="#94a3b8" font-size="7" text-anchor="middle">pgvector + HNSW</text>
+
+        <rect x="500" y="660" width="110" height="40" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="555" y="678" fill="white" font-size="9" font-weight="600" text-anchor="middle">REST + GQL</text>
+        <text x="555" y="690" fill="#94a3b8" font-size="7" text-anchor="middle">FastAPI :8080</text>
+
+        <rect x="630" y="660" width="100" height="40" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="680" y="678" fill="white" font-size="9" font-weight="600" text-anchor="middle">MCP Server</text>
+        <text x="680" y="690" fill="#94a3b8" font-size="7" text-anchor="middle">standalone</text>
+
+        <!-- ============ ARROWS: Clients → Cerebro ============ -->
+
+        <!-- Copilot → MCP -->
+        <path d="M 95 85 L 95 130 Q 95 145 105 150 L 115 165" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
+        <text x="58" y="120" fill="#22d3ee" font-size="7">MCP</text>
+
+        <!-- Hermes → MCP -->
+        <path d="M 265 85 L 265 130 Q 265 145 250 150 L 160 165" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
+        <text x="230" y="125" fill="#22d3ee" font-size="7">stdio</text>
+
+        <!-- CLI → CLI interface -->
+        <line x1="435" y1="85" x2="465" y2="168" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- ============ ARROWS: Interface → Core ============ -->
+
+        <line x1="125" y1="225" x2="125" y2="288" stroke="#fb7185" stroke-width="1" marker-end="url(#arrowhead)"/>
+        <line x1="305" y1="225" x2="305" y2="288" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+        <line x1="485" y1="225" x2="485" y2="288" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)"/>
+
+        <!-- Confluence Pub → External -->
+        <line x1="740" y1="197" x2="918" y2="57" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+
+        <!-- Sync → Git Remote -->
+        <line x1="200" y1="392" x2="450" y2="392" stroke="#94a3b8" stroke-width="1"/>
+        <path d="M 450 392 L 450 137 L 918 137" fill="none" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+
+        <!-- ============ ARROWS: Core → Storage ============ -->
+
+        <line x1="250" y1="430" x2="250" y2="496" stroke="#a78bfa" stroke-width="1" marker-end="url(#arrow-violet)"/>
+        <line x1="670" y1="430" x2="670" y2="496" stroke="#a78bfa" stroke-width="1" marker-end="url(#arrow-violet)"/>
+
+        <!-- ============ ARROW: KP Connector → Knowledge Palace ============ -->
+
+        <line x1="580" y1="415" x2="550" y2="628" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-amber)"/>
+        <text x="555" y="550" fill="#fbbf24" font-size="7">HTTP</text>
+
+        <!-- ============ LEGEND ============ -->
+        <text x="890" y="155" fill="white" font-size="10" font-weight="600">Legend</text>
+
+        <rect x="890" y="168" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="912" y="176" fill="#94a3b8" font-size="8">Frontend / Client</text>
+
+        <rect x="890" y="184" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="912" y="192" fill="#94a3b8" font-size="8">Backend / Core</text>
+
+        <rect x="890" y="200" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="912" y="208" fill="#94a3b8" font-size="8">Database / Storage</text>
+
+        <rect x="890" y="216" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="912" y="224" fill="#94a3b8" font-size="8">Security / MCP</text>
+
+        <rect x="890" y="232" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="912" y="240" fill="#94a3b8" font-size="8">Knowledge Palace</text>
+
+        <rect x="890" y="248" width="16" height="10" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="912" y="256" fill="#94a3b8" font-size="8">External Service</text>
+
+        <line x1="890" y1="270" x2="906" y2="270" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="912" y="273" fill="#94a3b8" font-size="8">External Connection</text>
+
+      </svg>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Core Engine</h3>
+        </div>
+        <ul>
+          <li>• Rust 2024 edition, zero-copy where possible</li>
+          <li>• SQLite FTS5 + Tantivy dual search</li>
+          <li>• pulldown-cmark with wikilinks extension</li>
+          <li>• petgraph for bidirectional link graph</li>
+          <li>• &lt;1ms search on 100k+ notes</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Dual-Profile Vaults</h3>
+        </div>
+        <ul>
+          <li>• Personal &amp; Professional isolation</li>
+          <li>• Separate SQLite DB per profile</li>
+          <li>• Independent .md file trees</li>
+          <li>• Per-profile encryption (AES-256-GCM)</li>
+          <li>• Per-profile Git remote for sync</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot rose"></div>
+          <h3>MCP + AI Integration</h3>
+        </div>
+        <ul>
+          <li>• Native MCP server (10 tools)</li>
+          <li>• GitHub Copilot via MCP stdio</li>
+          <li>• Hermes Agent integration</li>
+          <li>• Knowledge Palace semantic/RAG</li>
+          <li>• Confluence publishing pipeline</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Knowledge Palace</h3>
+        </div>
+        <ul>
+          <li>• PostgreSQL 16 + pgvector (768d)</li>
+          <li>• HNSW index for ANN search</li>
+          <li>• FastAPI REST + Strawberry GraphQL</li>
+          <li>• Semantic / Keyword / Hybrid modes</li>
+          <li>• RAG ask via MCP connector</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      Cerebro • Personal Knowledge Base • Rust + SQLite + Tantivy • MIT License • 2026
+    </p>
+  </div>
+</body>
+</html>

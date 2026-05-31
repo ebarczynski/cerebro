@@ -1,0 +1,3 @@
+-- Migration 002: FTS sync triggers removed
+-- FTS is managed manually by the storage layer for full content indexing.
+-- Triggers would only provide empty content strings, so direct management is better.
