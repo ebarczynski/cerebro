@@ -591,6 +591,7 @@ dependencies = [
  "anyhow",
  "cerebro",
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "tauri",

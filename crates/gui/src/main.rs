@@ -9,7 +9,8 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::{FileDialogBuilder, DialogExt};
 
 use cerebro::config::app::Config;
 use cerebro::config::profile::ProfileConfig;
@@ -137,7 +138,17 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
         .unwrap_or_else(|_| ProfileConfig::new(&profile_name));
 
     let mut storage = Storage::open(&profile_dir, &profile_config)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("Permission denied") || err_msg.contains("permission denied") {
+                format!(
+                    "Permission denied opening database at {}. Check that you own this directory and the file is not locked.",
+                    profile_dir.join("db.sqlite").display()
+                )
+            } else {
+                err_msg
+            }
+        })?;
 
     // Reindex all notes on open
     let _stats = storage.reindex_all().map_err(|e| e.to_string())?;
@@ -159,6 +170,65 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
 }
 
 // ── Profile Management ─────────────────────────────────────────
+
+#[tauri::command]
+fn home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "Could not determine home directory".to_string())
+}
+
+#[tauri::command]
+fn create_vault(state: State<AppState>, name: String, path: String) -> Result<VaultInfo, String> {
+    let profile_dir = PathBuf::from(&path);
+
+    // Create directory structure
+    std::fs::create_dir_all(&profile_dir).map_err(|e| {
+        format!("Failed to create vault directory at {}: {}", path, e)
+    })?;
+
+    // Initialize a ProfileConfig with the given name
+    let profile_config = ProfileConfig::new(&name);
+    profile_config.save_to(&profile_dir).map_err(|e| {
+        format!("Failed to save profile config: {}", e)
+    })?;
+
+    // Open storage
+    let storage = Storage::open(&profile_dir, &profile_config)
+        .map_err(|e| e.to_string())?;
+
+    let note_count = storage.list_notes(None, 10000, 0).map_err(|e| e.to_string())?.len();
+    let tag_count = storage.list_tags().map_err(|e| e.to_string())?.len();
+
+    // Store in AppState
+    let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
+    *storage_guard = Some(storage);
+    let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+    *pc_guard = Some(profile_config);
+
+    Ok(VaultInfo {
+        name,
+        path,
+        note_count,
+        tag_count,
+    })
+}
+
+#[tauri::command]
+async fn pick_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+
+    FileDialogBuilder::new(app.dialog().to_owned())
+        .set_title("Select Directory")
+        .pick_folder(move |path: Option<tauri_plugin_dialog::FilePath>| {
+            let resolved = path.and_then(|fp| fp.into_path().ok());
+            let _ = tx.send(resolved);
+        });
+
+    rx.await
+        .map(|opt| opt.map(|p| p.to_string_lossy().to_string()))
+        .map_err(|e| format!("Dialog error: {}", e))
+}
 
 #[tauri::command]
 fn list_profiles(state: State<AppState>) -> Result<Vec<ProfileInfo>, String> {
@@ -455,6 +525,9 @@ pub fn run() {
             profile_config: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            home_dir,
+            create_vault,
+            pick_directory,
             init_vault,
             open_vault,
             list_profiles,

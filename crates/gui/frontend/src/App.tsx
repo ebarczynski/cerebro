@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-dialog";
 import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
@@ -180,7 +182,7 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
 
 // ── Welcome Screen ─────────────────────────────────────────────
 
-function WelcomeScreen({ onInit }: { onInit: () => void }) {
+function WelcomeScreen({ onOpen, onCreate }: { onOpen: () => void; onCreate: () => void }) {
   return (
     <div className="flex-1 flex items-center justify-center bg-[#0a0a0f]">
       <div className="text-center max-w-md">
@@ -189,15 +191,20 @@ function WelcomeScreen({ onInit }: { onInit: () => void }) {
         <p className="text-[#8888a0] mb-8 leading-relaxed">
           Your personal knowledge base. Store notes, connect ideas, and explore your knowledge graph.
         </p>
-        <button
-          onClick={onInit}
-          className="px-6 py-3 bg-[#6366f1] hover:bg-[#818cf8] text-white rounded-lg font-medium transition-colors"
-        >
-          Open or Create Vault
-        </button>
-        <p className="text-xs text-[#8888a0] mt-4">
-          Profiles: <span className="text-white">personal</span> · <span className="text-white">professional</span>
-        </p>
+        <div className="space-y-3">
+          <button
+            onClick={onOpen}
+            className="w-full px-6 py-3 bg-[#6366f1] hover:bg-[#818cf8] text-white rounded-lg font-medium transition-colors"
+          >
+            Open Existing Vault
+          </button>
+          <button
+            onClick={onCreate}
+            className="w-full px-6 py-3 bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#818cf8] border border-[#333] rounded-lg font-medium transition-colors"
+          >
+            Create New Vault
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -231,14 +238,14 @@ export default function App() {
 
   // ── Load vault ─────────────────────────────────────────────
 
-  const loadVault = useCallback(async (profileName?: string) => {
+  const loadVault = useCallback(async (profileName?: string, vaultPath?: string) => {
     try {
-      const home = "/home/ed";
+      const home = await homeDir();
       const profile = profileName || "personal";
-      const vaultPath = `${home}/.cerebro/profiles/${profile}`;
+      const path = vaultPath || `${home}.cerebro/profiles/${profile}`;
 
       const info = await invoke<{ name: string; path: string; note_count: number; tag_count: number }>("open_vault", {
-        path: vaultPath,
+        path,
         profile,
       });
 
@@ -262,21 +269,58 @@ export default function App() {
     }
   }, []);
 
-  // Init vault
-  const handleInit = useCallback(async () => {
+  const handleOpenVault = useCallback(async () => {
     try {
-      const home = "/home/ed";
-      await invoke("init_vault", { path: `${home}/.cerebro/profiles/personal`, profile: "personal" });
-      await loadVault("personal");
+      const selected = await open({ directory: true, multiple: false, title: "Select Vault Directory" });
+      if (!selected) return;
+      const vaultPath = typeof selected === 'string' ? selected : selected as string;
+      const profileName = vaultPath.split('/').pop() || 'personal';
+      await loadVault(profileName, vaultPath);
     } catch (e) {
-      console.error("Failed to init vault:", e);
+      console.error("Failed to open vault:", e);
+    }
+  }, [loadVault]);
+
+  const handleCreateVault = useCallback(async () => {
+    try {
+      const name = prompt('Enter vault name:', 'my-vault');
+      if (!name) return;
+      const home = await homeDir();
+      const vaultPath = `${home}.cerebro/profiles/${name}`;
+      await invoke('create_vault', { name, path: vaultPath });
+      await loadVault(name, vaultPath);
+    } catch (e) {
+      console.error("Failed to create vault:", e);
     }
   }, [loadVault]);
 
   // Auto-load on mount
   useEffect(() => {
-    loadVault();
-  }, [loadVault]);
+    (async () => {
+      try {
+        const home = await homeDir();
+        const defaultPath = `${home}.cerebro/profiles/personal`;
+        // Try to open default vault silently
+        await invoke('open_vault', { path: defaultPath, profile: 'personal' });
+        setVaultOpen(true);
+
+        const [notesList, tagsList, profilesList] = await Promise.all([
+          invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+          invoke<TagInfo[]>("list_tags"),
+          invoke<ProfileInfo[]>("list_profiles"),
+        ]);
+
+        setNotes(notesList);
+        setTags(tagsList);
+        setProfiles(profilesList);
+
+        const ap = profilesList.find((p) => p.is_active) || profilesList[0] || null;
+        setActiveProfile(ap);
+      } catch {
+        setVaultOpen(false);
+      }
+    })();
+  }, []);
 
   // ── Note operations ────────────────────────────────────────
 
@@ -476,7 +520,7 @@ export default function App() {
   if (!vaultOpen) {
     return (
       <div className="h-screen flex flex-col">
-        <WelcomeScreen onInit={handleInit} />
+        <WelcomeScreen onOpen={handleOpenVault} onCreate={handleCreateVault} />
         <StatusBar
           noteCount={0}
           wordCount={0}
