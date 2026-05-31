@@ -1,7 +1,8 @@
 [package]
 name = "cerebro"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.96.0"
 description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
 license = "MIT"
 authors = ["Ed Barczynski"]
@@ -12,6 +13,10 @@ categories = ["command-line-utilities", "text-processing"]
 [[bin]]
 name = "cerebro"
 path = "src/main.rs"
+
+[workspace]
+members = ["crates/gui"]
+resolver = "3"
 
 [dependencies]
 # CLI

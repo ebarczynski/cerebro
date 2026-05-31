@@ -19,3 +19,9 @@ db.sqlite
 db.sqlite-wal
 db.sqlite-shm
 tantivy/
+
+# GUI frontend
+crates/gui/frontend/node_modules/
+crates/gui/frontend/dist/
+crates/gui/icons/icon.icns
+crates/gui/icons/icon.ico

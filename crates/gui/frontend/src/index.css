@@ -1,0 +1,210 @@
+@import "tailwindcss";
+
+/* ── Cerebro Dark Theme ──────────────────────────────────────── */
+
+:root {
+  --cerebro-bg: #0a0a0f;
+  --cerebro-surface: #12121a;
+  --cerebro-surface-2: #1a1a25;
+  --cerebro-border: #2a2a3a;
+  --cerebro-text: #e4e4e8;
+  --cerebro-text-muted: #8888a0;
+  --cerebro-accent: #6366f1;
+  --cerebro-accent-hover: #818cf8;
+  --cerebro-success: #22c55e;
+  --cerebro-warning: #eab308;
+  --cerebro-danger: #ef4444;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--cerebro-bg);
+  color: var(--cerebro-text);
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cerebro-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cerebro-text-muted);
+}
+
+/* ── CodeMirror overrides ────────────────────────────────────── */
+
+.cm-editor {
+  height: 100% !important;
+  font-size: 14px;
+  background: transparent !important;
+}
+
+.cm-editor .cm-scroller {
+  overflow: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.cm-editor .cm-content {
+  padding: 16px 0;
+}
+
+.cm-editor .cm-gutters {
+  background: transparent !important;
+  border-right: 1px solid var(--cerebro-border) !important;
+  color: var(--cerebro-text-muted) !important;
+}
+
+.cm-editor .cm-activeLineGutter {
+  background: var(--cerebro-surface-2) !important;
+}
+
+.cm-editor .cm-activeLine {
+  background: rgba(99, 102, 241, 0.05) !important;
+}
+
+.cm-editor.cm-focused {
+  outline: none !important;
+}
+
+/* ── Markdown preview ────────────────────────────────────────── */
+
+.markdown-preview {
+  line-height: 1.7;
+  color: var(--cerebro-text);
+}
+
+.markdown-preview h1 {
+  font-size: 2em;
+  font-weight: 700;
+  margin: 1em 0 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--cerebro-border);
+  color: #fff;
+}
+
+.markdown-preview h2 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--cerebro-border);
+}
+
+.markdown-preview h3 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+
+.markdown-preview p {
+  margin: 0.5em 0;
+}
+
+.markdown-preview a {
+  color: var(--cerebro-accent);
+  text-decoration: none;
+}
+
+.markdown-preview a:hover {
+  text-decoration: underline;
+}
+
+.markdown-preview code {
+  background: var(--cerebro-surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.markdown-preview pre {
+  background: var(--cerebro-surface);
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+  border: 1px solid var(--cerebro-border);
+}
+
+.markdown-preview pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-preview blockquote {
+  border-left: 3px solid var(--cerebro-accent);
+  padding-left: 16px;
+  margin: 0.5em 0;
+  color: var(--cerebro-text-muted);
+}
+
+.markdown-preview ul, .markdown-preview ol {
+  padding-left: 24px;
+  margin: 0.5em 0;
+}
+
+.markdown-preview li {
+  margin: 0.2em 0;
+}
+
+.markdown-preview img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+}
+
+.markdown-preview th, .markdown-preview td {
+  border: 1px solid var(--cerebro-border);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.markdown-preview th {
+  background: var(--cerebro-surface-2);
+  font-weight: 600;
+}
+
+/* ── Animations ──────────────────────────────────────────────── */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}

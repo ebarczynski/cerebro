@@ -1,212 +1,176 @@
-# Cerebro 🧠
+# 🧠 Cerebro
 
-> A fast, secure, local-first personal knowledge base with dual-profile vaults, bidirectional links, and MCP integration.
+A fast, secure, local-first personal knowledge base with dual-profile vaults, 
+MCP integration for AI coding tools, Knowledge Palace connector, and Confluence publishing.
 
-**Cerebro** (Latin for "brain") is a Rust-based knowledge management tool inspired by [Obsidian](https://obsidian.md). It stores notes as plain Markdown files, maintains a SQLite index with full-text search, tracks bidirectional wikilinks, and exposes everything via an MCP server for AI tool integration.
+Built with **Rust 1.96.0** (edition 2024), **Tauri 2.0**, **React 19**, 
+**CodeMirror 6**, and **TailwindCSS v4**.
 
 ## Features
 
-- **Dual-profile vaults** — separate personal and professional knowledge bases
-- **Markdown-native** — notes are `.md` files you own; no lock-in
-- **Bidirectional links** — `[[wikilinks]]` with automatic backlink tracking
-- **Full-text search** — SQLite FTS5 with Porter stemmer + Unicode support
-- **Tag management** — frontmatter tags + inline `#tags`, unified
-- **MCP server** — expose your knowledge base to GitHub Copilot, Hermes, and other MCP clients
-- **Knowledge Palace connector** — semantic/RAG search via pgvector
-- **Confluence publishing** — push notes to Atlassian Confluence
-- **Git sync** — automatic version control for your vault
-- **Daily notes** — quick journaling with date-indexed notes
-- **Quick capture** — instant inbox notes from CLI
+- **Dual-profile vaults** — separate personal and professional knowledge domains
+- **Markdown-native** — `.md` files are the source of truth, with YAML frontmatter
+- **Wikilinks** — `[[Note Name]]` with `#heading` and `|alias` support
+- **Bidirectional links** — automatic backlink and forward-link tracking
+- **Full-text search** — SQLite FTS5 with Porter stemmer
+- **Tag management** — unified frontmatter `tags:` + inline `#tags`
+- **Daily notes** — `/Daily/YYYY-MM-DD.md` auto-generated
+- **Knowledge graph** — interactive D3.js force-directed graph visualization
+- **Knowledge Palace connector** — semantic/RAG search via pgvector at `localhost:8080`
+- **Confluence publisher** — markdown → Confluence Storage Format → REST API
+- **Git sync** — automatic version control for vaults
+- **MCP server** — 10 tools via JSON-RPC over stdio for Copilot, Hermes, and other MCP clients
+- **Tauri 2.0 GUI** — native desktop app (Linux + macOS), dark theme, split-pane layout
+- **CLI** — full command-line interface for scripting and automation
+- **Encryption-ready** — AES-256-GCM profile encryption support
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│                   CLI (clap)                  │
-├──────────┬───────────┬───────────┬───────────┤
-│  Parser  │  Storage  │  Search   │   Links   │
-│(pulldown │ (SQLite + │  (FTS5)   │(wikilinks │
-│  -cmark) │  FTS5)    │           │ + graph)  │
-├──────────┴───────────┴───────────┴───────────┤
-│            MCP Server (JSON-RPC)              │
-├───────────────────┬──────────────────────────┤
-│  KP Connector     │  Confluence Publisher     │
-│  (HTTP/pgvector)  │  (REST API)               │
-└───────────────────┴──────────────────────────┘
+cerebro/
+├── src/                          # Core library (cerebro crate)
+│   ├── config/                   # TOML config, profile management
+│   ├── storage/                  # SQLite CRUD, FTS5, migrations
+│   ├── parser/                   # Markdown parsing, frontmatter, wikilinks
+│   ├── links/                    # petgraph bidirectional link graph
+│   ├── search/                   # Full-text search wrapper
+│   ├── mcp/                      # MCP server (JSON-RPC 2.0 over stdio)
+│   ├── kp/                       # Knowledge Palace HTTP connector
+│   ├── publish/                  # Confluence REST publisher
+│   ├── sync/                     # Git-based sync
+│   └── cli/                      # clap CLI interface
+├── crates/gui/                   # Tauri 2.0 GUI application
+│   ├── src/main.rs               # 19 Tauri commands wired to core lib
+│   ├── frontend/                 # React 19 + TypeScript frontend
+│   │   ├── src/
+│   │   │   ├── App.tsx           # Main app with graph view, preview, welcome
+│   │   │   └── components/       # Sidebar, Editor, Search, StatusBar
+│   │   └── index.css             # TailwindCSS v4 dark theme
+│   └── tauri.conf.json           # Tauri configuration
+├── migrations/                   # SQLite schema migrations
+└── tests/                        # Integration tests (9 tests)
 ```
 
 ## Quick Start
 
+### CLI
+
 ```bash
-# Build
+# Build release
 cargo build --release
 
-# Initialize your first vault
+# Initialize a vault
 cerebro init
 
 # Create a note
-cerebro notes create "My First Note" --content "Hello, world!"
-
-# Create with tags
-cerebro notes create "Rust Tips" --tags "rust,programming" --content "# Rust Tips\n\nUse `cargo clippy`!"
+cerebro notes create "My First Note" -c "# Hello World\n\nThis is my first note."
 
 # Search
-cerebro search "rust safety"
+cerebro search "hello world"
 
 # Show backlinks
-cerebro backlinks "Rust Tips"
+cerebro backlinks "My First Note"
 
-# List tags
-cerebro tags
-
-# Daily note
-cerebro daily today
-
-# Quick capture
-cerebro capture "Remember to check the new API docs"
-
-# Reindex vault from filesystem
-cerebro reindex
-
-# Start MCP server (stdio)
+# Start MCP server (for Copilot/Hermes)
 cerebro mcp
 ```
 
-## Profile Management
+### GUI
 
 ```bash
-# List profiles
-cerebro profile list
+# Prerequisites (Linux)
+sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev \
+  libjavascriptcoregtk-4.1-dev
 
-# Create a new profile
-cerebro profile create work --display-name "Work Vault"
+# Install frontend deps
+cd crates/gui/frontend && npm install && cd ../../..
 
-# Switch profile
-cerebro profile switch work
+# Run in dev mode
+cargo tauri dev
 
-# Use a specific profile for one command
-cerebro --profile work notes list
+# Build release bundle
+cargo tauri build
 ```
 
-## Configuration
+### MCP Tools (for AI coding tools)
 
-Global config at `~/.cerebro/config.toml`:
-
-```toml
-default_profile = "personal"
-editor = "vim"
-
-[profiles_dir]
-# Default: ~/.cerebro/profiles/
-
-[knowledge_palace]
-enabled = true
-endpoint = "http://localhost:8080"
-
-[confluence]
-enabled = false
-base_url = "https://yourorg.atlassian.net/wiki"
-space_key = "ENG"
-```
-
-Per-profile vault config at `~/.cerebro/profiles/<name>/vault.toml`:
-
-```toml
-name = "personal"
-display_name = "Personal Vault"
-notes_dir = "notes"
-encryption = false
-
-[sync]
-method = "git"
-remote = "git@github.com:user/notes.git"
-branch = "main"
-
-[knowledge_palace]
-enabled = true
-endpoint = "http://localhost:8080"
-sync_scope = "all"
-```
-
-## MCP Server
-
-Cerebro exposes an MCP (Model Context Protocol) server with these tools:
+The MCP server exposes 10 tools over stdio:
 
 | Tool | Description |
 |------|-------------|
 | `cerebro_search` | Full-text search across all notes |
-| `cerebro_read_note` | Read a specific note by title or ID |
-| `cerebro_create_note` | Create a new note |
-| `cerebro_update_note` | Update an existing note |
+| `cerebro_read_note` | Read a note by title or path |
+| `cerebro_create_note` | Create a new note with optional tags |
+| `cerebro_update_note` | Update an existing note's content |
 | `cerebro_delete_note` | Delete a note |
-| `cerebro_list_notes` | List notes with optional tag filter |
-| `cerebro_backlinks` | Get backlinks for a note |
-| `cerebro_tags` | List all tags |
-| `cerebro_daily` | Get/create daily note |
+| `cerebro_list_notes` | List notes, optionally filtered by tag |
+| `cerebro_list_tags` | List all tags with counts |
+| `cerebro_backlinks` | Get notes linking to a given note |
+| `cerebro_graph` | Get the full knowledge graph |
 | `cerebro_kp_search` | Semantic search via Knowledge Palace |
 
-### Configure in Copilot / VS Code
+## Configuration
 
-Add to your MCP settings:
+Cerebro stores config at `~/.cerebro/config.toml`:
 
-```json
-{
-  "mcpServers": {
-    "cerebro": {
-      "command": "cerebro",
-      "args": ["mcp"]
-    }
-  }
-}
+```toml
+[app]
+default_profile = "personal"
+
+[profiles.personal]
+display_name = "Personal"
+notes_dir = "notes"
+encryption = false
+
+[profiles.personal.knowledge_palace]
+enabled = true
+endpoint = "http://localhost:8080"
+
+[profiles.professional]
+display_name = "Professional"
+notes_dir = "notes"
+encryption = false
+```
+
+## Development
+
+```bash
+# Run all tests
+cargo test
+
+# Run with clippy
+cargo clippy -- -D warnings
+
+# Build core library only
+cargo build --release -p cerebro
+
+# Build GUI only
+cargo build --release -p cerebro-gui
+
+# Frontend development
+cd crates/gui/frontend
+npm run dev
 ```
 
 ## Tech Stack
 
 | Component | Technology |
-|-----------|-----------|
-| Language | Rust 2024 edition |
-| CLI | clap 4 (derive) |
-| Markdown | pulldown-cmark |
-| Database | SQLite 3 + FTS5 (via rusqlite) |
-| Search | SQLite FTS5 (Porter stemmer) |
-| Link Graph | Custom (SQLite-backed) |
-| HTTP Client | reqwest |
-| Serialization | serde + serde_json + toml |
+|-----------|------------|
+| Core library | Rust 1.96.0, edition 2024 |
+| Storage | SQLite + FTS5 |
+| Parser | pulldown-cmark |
+| Link graph | petgraph |
+| GUI framework | Tauri 2.0 |
+| Frontend | React 19 + TypeScript |
+| Editor | CodeMirror 6 |
+| Styling | TailwindCSS v4 |
+| Graph viz | D3.js force-directed |
+| CLI | clap 4 |
+| Search | rusqlite FTS5 |
+| HTTP client | reqwest (KP connector) |
 | MCP | JSON-RPC 2.0 over stdio |
-| UUID | uuid v7 (time-ordered) |
-
-## Project Structure
-
-```
-cerebro/
-├── src/
-│   ├── cli/          # CLI commands (clap)
-│   ├── config/       # TOML configuration
-│   ├── parser/       # Markdown parsing, frontmatter, wikilinks, tags
-│   ├── storage/      # SQLite storage engine
-│   ├── search/       # Full-text search
-│   ├── links/        # Link graph (placeholder for petgraph)
-│   ├── mcp/          # MCP server (JSON-RPC)
-│   ├── kp/           # Knowledge Palace connector
-│   ├── publish/      # Confluence publisher
-│   └── sync/         # Git sync
-├── migrations/       # SQLite migrations
-├── tests/            # Integration tests
-└── docs/             # Architecture & plans
-```
-
-## Running Tests
-
-```bash
-# All tests (unit + integration + doctests)
-cargo test
-
-# Just integration tests
-cargo test --test integration_tests
-
-# Release build
-cargo build --release
-```
+| Build | cargo + Vite |
 
 ## License
 
