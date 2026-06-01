@@ -18,7 +18,7 @@ interface ImportDropZoneProps {
 }
 
 // Supported file extensions
-const SUPPORTED_EXTENSIONS = new Set(["pdf", "pptx", "ods", "html", "htm"]);
+const SUPPORTED_EXTENSIONS = new Set(["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"]);
 
 function isSupportedFile(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() || "";
@@ -96,7 +96,7 @@ export default function ImportDropZone({
         filters: [
           {
             name: "Documents",
-            extensions: ["pdf", "pptx", "ods", "html", "htm"],
+            extensions: ["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"],
           },
         ],
         title: "Select documents to import",
@@ -231,7 +231,7 @@ export default function ImportDropZone({
         onClick={handlePickFiles}
         disabled={importing}
         className="p-1.5 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors disabled:opacity-50"
-        title="Import documents (PDF, PPTX, ODS, HTML)"
+        title="Import documents (PDF, PPTX, DOCX, DOC, ODS, XLSX, XLS, ODT, HTML)"
       >
         <svg
           width="18"
