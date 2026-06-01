@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod import;
 pub mod kp;
 pub mod links;
 pub mod mcp;
