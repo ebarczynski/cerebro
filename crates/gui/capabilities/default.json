@@ -4,6 +4,11 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:webview:allow-set-webview-position",
+    "core:webview:allow-webview-close",
+    "core:window:allow-drag-drop",
     "dialog:default",
     "fs:default",
     "fs:allow-read-file",

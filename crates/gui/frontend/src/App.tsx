@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
 import StatusBar from "./components/StatusBar";
+import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -315,6 +316,7 @@ export default function App() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -569,6 +571,42 @@ export default function App() {
     }
   }, []);
 
+  // ── Document import ─────────────────────────────────────────
+
+  const handleImportComplete = useCallback(async (responses: ImportResponse[]) => {
+    // Reload notes and tags to include the imported ones
+    const [notesList, tagsList] = await Promise.all([
+      invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+      invoke<TagInfo[]>("list_tags"),
+    ]);
+    setNotes(notesList);
+    setTags(tagsList);
+
+    // If only one file was imported, open it
+    if (responses.length === 1) {
+      const resp = responses[0];
+      try {
+        const nc = await invoke<NoteContent>("get_note", { identifier: resp.note_path });
+        setActiveNote(nc.note);
+        setNoteContent(nc.body);
+        setWordCount(nc.body.split(/\s+/).filter(Boolean).length);
+      } catch (e) {
+        console.error("Failed to open imported note:", e);
+      }
+    }
+
+    const msg = responses.length === 1
+      ? `Imported: ${responses[0].title} (${responses[0].format})`
+      : `Imported ${responses.length} documents`;
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
+  const handleImportError = useCallback((message: string) => {
+    setToastMessage(`❌ ${message}`);
+    setTimeout(() => setToastMessage(null), 5000);
+  }, []);
+
   // ── Keyboard shortcuts ─────────────────────────────────────
 
   useEffect(() => {
@@ -672,6 +710,13 @@ export default function App() {
               <path d="M9.5 10.5L5.5 7.5M14.5 10.5L18.5 7.5M9.5 13.5L5.5 16.5M14.5 13.5L18.5 16.5" />
             </svg>
           </button>
+
+          {/* Import documents button — rendered by ImportDropZone */}
+          <ImportDropZone
+            onImportComplete={handleImportComplete}
+            onError={handleImportError}
+            vaultOpen={vaultOpen}
+          />
 
           {/* Backlinks toggle */}
           <button
@@ -803,6 +848,15 @@ export default function App() {
 
       {/* Graph view */}
       {graphOpen && <GraphViewPanel onClose={() => setGraphOpen(false)} />}
+
+      {/* Toast notifications */}
+      {toastMessage && (
+        <div className="fixed bottom-14 right-4 z-50 animate-fade-in">
+          <div className="bg-[#1e1e2e] border border-[#2a2a3a] rounded-lg px-4 py-3 shadow-xl max-w-sm">
+            <p className="text-sm text-white">{toastMessage}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

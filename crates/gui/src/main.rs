@@ -546,6 +546,90 @@ fn read_image_as_base64(state: State<AppState>, path: String) -> Result<String, 
     Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }
 
+// ── Document Import ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportDocumentRequest {
+    pub file_path: String,
+    pub title: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportDocumentResponse {
+    pub title: String,
+    pub format: String,
+    pub tags: Vec<String>,
+    pub note_id: String,
+    pub note_path: String,
+}
+
+#[tauri::command]
+fn import_document(state: State<AppState>, req: ImportDocumentRequest) -> Result<ImportDocumentResponse, String> {
+    use cerebro::import::import_file;
+
+    let path = std::path::Path::new(&req.file_path);
+    let result = import_file(path).map_err(|e| format!("Import failed: {}", e))?;
+
+    let title = req.title.unwrap_or(result.title);
+    let mut tags = result.tags;
+    if let Some(extra) = req.tags {
+        tags.extend(extra);
+    }
+
+    let mut guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_mut().ok_or("No vault open — open a vault first")?;
+
+    let note = storage
+        .create_note(&title, &result.markdown, req.folder.as_deref(), Some(tags))
+        .map_err(|e| e.to_string())?;
+
+    Ok(ImportDocumentResponse {
+        title: note.title.clone(),
+        format: result.format.name().to_string(),
+        tags: note.tags.clone(),
+        note_id: note.id,
+        note_path: note.path,
+    })
+}
+
+/// Import multiple files at once (batch import for drag-and-drop).
+#[tauri::command]
+fn import_documents(state: State<AppState>, file_paths: Vec<String>, folder: Option<String>) -> Result<Vec<ImportDocumentResponse>, String> {
+    use cerebro::import::import_file;
+
+    let mut results = Vec::new();
+
+    let mut guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_mut().ok_or("No vault open — open a vault first")?;
+
+    for file_path in &file_paths {
+        let path = std::path::Path::new(file_path);
+        match import_file(path) {
+            Ok(result) => {
+                let tags = result.tags;
+                let note = storage
+                    .create_note(&result.title, &result.markdown, folder.as_deref(), Some(tags))
+                    .map_err(|e| e.to_string())?;
+
+                results.push(ImportDocumentResponse {
+                    title: note.title.clone(),
+                    format: result.format.name().to_string(),
+                    tags: note.tags.clone(),
+                    note_id: note.id,
+                    note_path: note.path,
+                });
+            }
+            Err(e) => {
+                return Err(format!("Failed to import '{}': {}", file_path, e));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 // ── Text Attachment Commands ──────────────────────────────────
 
 #[tauri::command]
@@ -605,6 +689,8 @@ pub fn run() {
             save_image,
             read_image_as_base64,
             read_attachment_text,
+            import_document,
+            import_documents,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cerebro");
