@@ -56,11 +56,12 @@ function MarkdownPreview({ content }: { content: string }) {
   const [html, setHtml] = useState("");
 
   useEffect(() => {
-    Promise.all([
-      import("marked"),
-      import("highlight.js"),
-    ]).then(async ([{ marked }, hljsModule]) => {
-      const hljs = hljsModule.default;
+    const loadMarkdown = async () => {
+      const [{ marked }, hljsModule] = await Promise.all([
+        import("marked"),
+        import("highlight.js").catch(() => null),
+      ]);
+      const hljs = (hljsModule as any)?.default ?? null;
       try {
         // Custom image renderer for vault attachments
         const renderer = new marked.Renderer();
@@ -89,14 +90,21 @@ function MarkdownPreview({ content }: { content: string }) {
           const lang = token.lang || "";
 
           let highlighted: string;
-          try {
-            if (lang && hljs.getLanguage(lang)) {
-              highlighted = hljs.highlight(code, { language: lang }).value;
-            } else {
-              highlighted = hljs.highlightAuto(code).value;
+          if (hljs) {
+            try {
+              if (lang && hljs.getLanguage(lang)) {
+                highlighted = hljs.highlight(code, { language: lang }).value;
+              } else {
+                highlighted = hljs.highlightAuto(code).value;
+              }
+            } catch {
+              highlighted = code;
             }
-          } catch {
-            highlighted = code;
+          } else {
+            highlighted = code
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
           }
 
           const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
@@ -145,7 +153,8 @@ function MarkdownPreview({ content }: { content: string }) {
       } catch {
         setHtml(`<pre>${content}</pre>`);
       }
-    }).catch(() => {
+    };
+    loadMarkdown().catch(() => {
       setHtml(`<pre>${content}</pre>`);
     });
   }, [content]);
