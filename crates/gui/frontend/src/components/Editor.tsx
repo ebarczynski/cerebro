@@ -7,7 +7,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightAc
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput, foldKeymap } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete';
-import { searchKeymap, highlightSelectionMatches, search, SearchQuery, getSearchQuery, setSearchQuery, findNext, findPrevious } from '@codemirror/search';
+import { searchKeymap, highlightSelectionMatches, search, SearchQuery, getSearchQuery, setSearchQuery, findNext, findPrevious, replaceNext, replaceAll } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { Extension, EditorState } from '@codemirror/state';
 import { invoke } from "@tauri-apps/api/core";
@@ -174,6 +174,12 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
   const [fontSizeToast, setFontSizeToast] = useState<string | null>(null);
   const fontSizeToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Replace bar state ─────────────────────────────────────
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [replaceText, setReplaceText] = useState('');
+  const [caseSensitive, setCaseSensitiveState] = useState(false);
+  const [useRegex, setUseRegex] = useState(false);
+
   const debouncedOnChange = useDebounce((val: string) => {
     onChange(val);
   }, 300);
@@ -310,11 +316,18 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     if (!view) return;
 
     if (searchQuery && searchQuery.trim()) {
-      const sq = new SearchQuery({ search: searchQuery, caseSensitive: false });
+      const sq = new SearchQuery({
+        search: searchQuery,
+        caseSensitive,
+        regexp: useRegex,
+      });
       view.dispatch({
         effects: setSearchQuery.of(sq),
       });
-      // Jump to first match
+      // Focus the editor and jump to first match
+      view.focus();
+      // Move cursor to start so findNext goes to the very first match
+      view.dispatch({ selection: { anchor: 0 } });
       findNext(view);
       updateMatchInfo(view);
     } else {
@@ -327,7 +340,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
       }
       setMatchInfo(null);
     }
-  }, [searchQuery, updateMatchInfo]);
+  }, [searchQuery, updateMatchInfo, caseSensitive, useRegex]);
 
   // Update match info on editor content changes or selection changes
   const searchUpdateListener = EditorView.updateListener.of((update) => {
@@ -350,7 +363,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     },
   ]);
 
-  // Search navigation keymap: F3/Shift+F3 + Escape to clear + Enter to cycle
+  // Search navigation keymap: F3/Shift+F3 + Escape to clear + Enter to cycle + Ctrl+H for replace
   const searchNavKeymap = keymap.of([
     {
       key: 'F3',
@@ -371,8 +384,27 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
       preventDefault: true,
     },
     {
+      key: 'Mod-h',
+      run: (view) => {
+        setReplaceOpen((prev) => !prev);
+        return true;
+      },
+      preventDefault: true,
+    },
+    {
+      key: 'Mod-f',
+      run: (view) => {
+        setReplaceOpen(true);
+        return false; // let default search panel also handle it
+      },
+    },
+    {
       key: 'Escape',
       run: (view) => {
+        if (replaceOpen) {
+          setReplaceOpen(false);
+          return true;
+        }
         const q = getSearchQuery(view.state);
         if (q.search) {
           view.dispatch({
@@ -512,20 +544,129 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     extensions.push(EditorState.readOnly.of(true));
   }
 
+  // ── Replace handlers ──────────────────────────────────────
+  const handleReplaceNext = useCallback(() => {
+    const view = cmRef.current?.view;
+    if (!view) return;
+    // Update the search query with the replace field, then call replaceNext
+    const current = getSearchQuery(view.state);
+    const updated = new SearchQuery({
+      search: current.search,
+      caseSensitive,
+      regexp: useRegex,
+      replace: replaceText,
+    });
+    view.dispatch({ effects: setSearchQuery.of(updated) });
+    replaceNext(view);
+    findNext(view);
+    updateMatchInfo(view);
+  }, [replaceText, caseSensitive, useRegex, updateMatchInfo]);
+
+  const handleReplaceAll = useCallback(() => {
+    const view = cmRef.current?.view;
+    if (!view) return;
+    const confirmed = window.confirm(`Replace all occurrences with "${replaceText}"?`);
+    if (!confirmed) return;
+    const current = getSearchQuery(view.state);
+    const updated = new SearchQuery({
+      search: current.search,
+      caseSensitive,
+      regexp: useRegex,
+      replace: replaceText,
+    });
+    view.dispatch({ effects: setSearchQuery.of(updated) });
+    replaceAll(view);
+    updateMatchInfo(view);
+  }, [replaceText, caseSensitive, useRegex, updateMatchInfo]);
+
+  const toggleCaseSensitive = useCallback(() => {
+    setCaseSensitiveState((prev) => !prev);
+  }, []);
+
+  const toggleRegex = useCallback(() => {
+    setUseRegex((prev) => !prev);
+  }, []);
+
   return (
-    <div className="h-full w-full overflow-hidden relative" style={{ backgroundColor: '#0a0a0f' }}>
-      <CodeMirror
-        ref={cmRef}
-        value={value}
-        onChange={handleChange}
-        extensions={extensions}
-        theme={oneDark}
-        basicSetup={false}
-        className="h-full w-full"
-        style={{
-          height: '100%',
-        }}
-      />
+    <div className="h-full w-full overflow-hidden relative flex flex-col" style={{ backgroundColor: '#0a0a0f' }}>
+      {/* Replace bar */}
+      {replaceOpen && (
+        <div
+          className="flex items-center gap-2 px-3 py-2 border-b"
+          style={{ backgroundColor: '#12121a', borderColor: '#2a2a3a', zIndex: 40 }}
+        >
+          <input
+            type="text"
+            value={replaceText}
+            onChange={(e) => setReplaceText(e.target.value)}
+            placeholder="Replace with..."
+            className="flex-1 bg-[#0a0a0f] text-sm text-zinc-200 placeholder-zinc-600 outline-none border border-[#2a2a3a] rounded px-2 py-1 focus:border-[#6366f1]"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleReplaceNext();
+              }
+            }}
+          />
+          <button
+            onClick={toggleCaseSensitive}
+            className={`px-2 py-1 text-xs rounded border transition-colors ${
+              caseSensitive
+                ? 'bg-[#6366f1]/20 text-[#a5b4fc] border-[#6366f1]/50'
+                : 'text-zinc-500 border-[#2a2a3a] hover:text-zinc-300'
+            }`}
+            title="Case sensitive (Alt+C)"
+          >
+            Aa
+          </button>
+          <button
+            onClick={toggleRegex}
+            className={`px-2 py-1 text-xs rounded border transition-colors ${
+              useRegex
+                ? 'bg-[#6366f1]/20 text-[#a5b4fc] border-[#6366f1]/50'
+                : 'text-zinc-500 border-[#2a2a3a] hover:text-zinc-300'
+            }`}
+            title="Regular expression (Alt+R)"
+          >
+            .*
+          </button>
+          <button
+            onClick={handleReplaceNext}
+            className="px-3 py-1 text-xs rounded bg-[#6366f1]/20 text-[#a5b4fc] border border-[#6366f1]/50 hover:bg-[#6366f1]/30 transition-colors"
+            title="Replace next (Enter)"
+          >
+            Replace
+          </button>
+          <button
+            onClick={handleReplaceAll}
+            className="px-3 py-1 text-xs rounded bg-[#6366f1]/20 text-[#a5b4fc] border border-[#6366f1]/50 hover:bg-[#6366f1]/30 transition-colors"
+            title="Replace all"
+          >
+            All
+          </button>
+          <button
+            onClick={() => setReplaceOpen(false)}
+            className="px-1.5 py-1 text-xs rounded text-zinc-500 hover:text-zinc-300 transition-colors"
+            title="Close (Escape)"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      <div className="flex-1 overflow-hidden">
+        <CodeMirror
+          ref={cmRef}
+          value={value}
+          onChange={handleChange}
+          extensions={extensions}
+          theme={oneDark}
+          basicSetup={false}
+          className="h-full w-full"
+          style={{
+            height: '100%',
+          }}
+        />
+      </div>
       {/* Font size toast overlay */}
       {fontSizeToast && (
         <div
@@ -570,7 +711,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
             {matchInfo.current}/{matchInfo.total} matches
           </span>
           <span style={{ color: '#52525b', fontSize: 10 }}>
-            F3↓ ↑Shift+F3 Esc✕
+            F3↓ ↑Shift+F3 Ctrl+HReplace Esc✕
           </span>
         </div>
       )}
