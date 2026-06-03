@@ -19,6 +19,12 @@ pub enum ImportFormat {
     Xls,
     Odt,
     Html,
+    /// Plain text / code file — imported as-is with syntax hint in code block
+    Text,
+    /// Markdown file — imported as-is
+    Markdown,
+    /// JSON file — pretty-printed in code block
+    Json,
 }
 
 impl ImportFormat {
@@ -34,6 +40,15 @@ impl ImportFormat {
             "xls" => Some(Self::Xls),
             "odt" => Some(Self::Odt),
             "html" | "htm" => Some(Self::Html),
+            "md" | "markdown" => Some(Self::Markdown),
+            "json" | "jsonl" => Some(Self::Json),
+            // All other text/code formats
+            "txt" | "text" | "csv" | "tsv" | "yaml" | "yml" | "toml" | "ini" | "cfg"
+            | "xml" | "css" | "scss" | "less" | "log" | "rst" | "asciidoc" | "adoc"
+            | "js" | "ts" | "jsx" | "tsx" | "py" | "rb" | "rs" | "go" | "java"
+            | "c" | "cpp" | "h" | "hpp" | "sh" | "bash" | "zsh" | "fish"
+            | "sql" | "graphql" | "dockerfile" | "makefile"
+            => Some(Self::Text),
             _ => None,
         }
     }
@@ -57,12 +72,21 @@ impl ImportFormat {
             Self::Xls => "XLS",
             Self::Odt => "ODT",
             Self::Html => "HTML",
+            Self::Markdown => "Markdown",
+            Self::Json => "JSON",
+            Self::Text => "Text",
         }
     }
 
     /// All supported file extensions for display.
     pub fn supported_extensions() -> &'static [&'static str] {
-        &["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"]
+        &[
+            "md", "txt", "json", "csv", "yaml", "yml", "toml",
+            "pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt",
+            "html", "htm", "xml", "rst",
+            "py", "js", "ts", "rs", "go", "java", "c", "cpp", "sh",
+            "sql", "log",
+        ]
     }
 }
 
@@ -113,6 +137,9 @@ pub fn import_file(path: &Path) -> Result<ImportResult> {
         ImportFormat::Xls => convert_spreadsheet::<calamine::Xls<_>>(&data)?,
         ImportFormat::Odt => convert_odt(&data)?,
         ImportFormat::Html => convert_html(&data)?,
+        ImportFormat::Markdown => convert_markdown(&data)?,
+        ImportFormat::Json => convert_json(&data)?,
+        ImportFormat::Text => convert_text(&data, path)?,
     };
 
     let tags = vec![
@@ -771,6 +798,68 @@ fn collect_text(el: scraper::element_ref::ElementRef) -> String {
     el.text().collect::<Vec<_>>().join(" ")
 }
 
+// ── Markdown → Markdown (pass-through) ────────────────────────
+
+fn convert_markdown(data: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(data)
+        .context("reading markdown file as UTF-8")?;
+    Ok(text.to_string())
+}
+
+// ── JSON → Markdown (pretty-printed in code block) ────────────
+
+fn convert_json(data: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(data)
+        .context("reading JSON file as UTF-8")?;
+
+    // Try to pretty-print the JSON
+    let pretty = if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        serde_json::to_string_pretty(&val).unwrap_or_else(|_| text.to_string())
+    } else {
+        // JSONL or malformed — just wrap as-is
+        text.to_string()
+    };
+
+    Ok(format!("```json\n{}\n```", pretty))
+}
+
+// ── Text/Code → Markdown (in code block with lang hint) ───────
+
+fn convert_text(data: &[u8], path: &Path) -> Result<String> {
+    let text = std::str::from_utf8(data)
+        .context("reading text file as UTF-8")?;
+
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Map extension to syntax highlight language hint
+    let lang = match ext.as_str() {
+        "py" => "python",
+        "js" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "c" | "h" => "c",
+        "cpp" | "hpp" => "cpp",
+        "sh" | "bash" | "zsh" | "fish" => "bash",
+        "sql" => "sql",
+        "graphql" => "graphql",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "html" | "htm" => "html",
+        "css" | "scss" | "less" => "css",
+        "csv" | "tsv" => "csv",
+        "json" | "jsonl" => "json",
+        _ => "",
+    };
+
+    Ok(format!("```{}\n{}\n```", lang, text))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -861,5 +950,51 @@ mod tests {
         assert!(exts.contains(&"pptx"));
         assert!(exts.contains(&"ods"));
         assert!(exts.contains(&"html"));
+        // New formats
+        assert!(exts.contains(&"md"));
+        assert!(exts.contains(&"txt"));
+        assert!(exts.contains(&"json"));
+        assert!(exts.contains(&"yaml"));
+        assert!(exts.contains(&"py"));
+        assert!(exts.contains(&"rs"));
+        assert!(exts.contains(&"csv"));
+    }
+
+    #[test]
+    fn test_text_format_detection() {
+        assert_eq!(ImportFormat::from_extension("md"), Some(ImportFormat::Markdown));
+        assert_eq!(ImportFormat::from_extension("json"), Some(ImportFormat::Json));
+        assert_eq!(ImportFormat::from_extension("txt"), Some(ImportFormat::Text));
+        assert_eq!(ImportFormat::from_extension("py"), Some(ImportFormat::Text));
+        assert_eq!(ImportFormat::from_extension("rs"), Some(ImportFormat::Text));
+        assert_eq!(ImportFormat::from_extension("csv"), Some(ImportFormat::Text));
+        assert_eq!(ImportFormat::from_extension("yaml"), Some(ImportFormat::Text));
+    }
+
+    #[test]
+    fn test_convert_markdown() {
+        let md = b"# Hello\n\nThis is **markdown**.";
+        let result = convert_markdown(md).unwrap();
+        assert!(result.contains("# Hello"));
+        assert!(result.contains("**markdown**"));
+    }
+
+    #[test]
+    fn test_convert_json() {
+        let json = b"{\"key\": \"value\", \"num\": 42}";
+        let result = convert_json(json).unwrap();
+        assert!(result.starts_with("```json"));
+        assert!(result.contains("\"key\": \"value\""));
+        assert!(result.ends_with("```"));
+    }
+
+    #[test]
+    fn test_convert_text() {
+        let text = b"fn main() { println!(\"hello\"); }";
+        let path = Path::new("test.rs");
+        let result = convert_text(text, path).unwrap();
+        assert!(result.starts_with("```rust"));
+        assert!(result.contains("fn main()"));
+        assert!(result.ends_with("```"));
     }
 }

@@ -104,11 +104,15 @@ const cerebroTheme = EditorView.theme({
     color: '#fca5a5',
   },
   '.cm-searchMatch': {
-    backgroundColor: '#6366f140',
-    outline: '1px solid #6366f180',
+    backgroundColor: '#FFE58F !important',
+    color: '#000000 !important',
+    outline: '2px solid #FFD700',
+    borderRadius: '2px',
   },
   '.cm-searchMatch.cm-searchMatch-selected': {
-    backgroundColor: '#6366f160',
+    backgroundColor: '#FF9800 !important',
+    color: '#000000 !important',
+    outline: '2px solid #F57C00',
   },
   '.cm-panels': {
     backgroundColor: '#12121a',
@@ -245,9 +249,18 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     },
   ]);
 
-  // Dynamic font size theme — overrides the base fontSize
+  // Dynamic font size theme — must target CodeMirror internals directly
   const fontSizeTheme = EditorView.theme({
-    '&': {
+    '.cm-content': {
+      fontSize: `${fontSize}px`,
+    },
+    '.cm-line': {
+      fontSize: `${fontSize}px`,
+    },
+    '.cm-gutters': {
+      fontSize: `${fontSize}px`,
+    },
+    '.cm-tooltip': {
       fontSize: `${fontSize}px`,
     },
   });

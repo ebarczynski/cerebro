@@ -17,12 +17,30 @@ interface ImportDropZoneProps {
   vaultOpen: boolean;
 }
 
-// Supported file extensions
-const SUPPORTED_EXTENSIONS = new Set(["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"]);
+// Supported file extensions — documents + text/code files
+const DOCUMENT_EXTENSIONS = new Set(["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"]);
+const TEXT_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "text", "csv", "tsv",
+  "json", "jsonl", "yaml", "yml", "toml", "ini", "cfg",
+  "xml", "html", "htm", "css", "scss", "less",
+  "log", "rst", "asciidoc", "adoc",
+  "js", "ts", "jsx", "tsx", "py", "rb", "rs", "go", "java", "c", "cpp", "h", "hpp",
+  "sh", "bash", "zsh", "fish",
+  "sql", "graphql",
+  "dockerfile", "makefile",
+]);
+const ALL_SUPPORTED = new Set([...DOCUMENT_EXTENSIONS, ...TEXT_EXTENSIONS]);
 
 function isSupportedFile(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() || "";
-  return SUPPORTED_EXTENSIONS.has(ext);
+  // Also match files with no extension but known names
+  const basename = path.split("/").pop()?.toLowerCase() || "";
+  return ALL_SUPPORTED.has(ext) || ["readme", "license", "makefile", "dockerfile", ".gitignore"].includes(basename);
+}
+
+function isTextFile(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  return TEXT_EXTENSIONS.has(ext);
 }
 
 function fileExtension(path: string): string {
@@ -50,7 +68,7 @@ export default function ImportDropZone({
       const supported = filePaths.filter(isSupportedFile);
       if (supported.length === 0) {
         onError(
-          "No supported files found. Supported formats: PDF, PPTX, ODS, HTML"
+          "No supported files found. Supported: MD, TXT, JSON, CSV, YAML, PDF, DOCX, PPTX, and more"
         );
         return;
       }
@@ -95,11 +113,19 @@ export default function ImportDropZone({
         multiple: true,
         filters: [
           {
-            name: "Documents",
-            extensions: ["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html", "htm"],
+            name: "All Supported",
+            extensions: [
+              "md", "txt", "json", "csv", "yaml", "yml", "toml",
+              "pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt",
+              "html", "htm", "xml", "rst",
+              "py", "js", "ts", "rs", "go", "java", "c", "cpp", "sh",
+              "sql", "log",
+            ],
           },
+          { name: "Markdown & Text", extensions: ["md", "txt", "text", "csv", "rst"] },
+          { name: "Documents", extensions: ["pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt", "html"] },
         ],
-        title: "Select documents to import",
+        title: "Select files to import",
       });
 
       if (!selected) return;
@@ -231,7 +257,7 @@ export default function ImportDropZone({
         onClick={handlePickFiles}
         disabled={importing}
         className="p-1.5 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors disabled:opacity-50"
-        title="Import documents (PDF, PPTX, DOCX, DOC, ODS, XLSX, XLS, ODT, HTML)"
+        title="Import files (MD, TXT, JSON, CSV, PDF, DOCX, PPTX, and more)"
       >
         <svg
           width="18"
@@ -257,7 +283,7 @@ export default function ImportDropZone({
                 Drop files to import
               </h2>
               <p className="text-[#8888a0] text-sm">
-                Supports PDF, PPTX, ODS, HTML
+                Supports MD, TXT, JSON, CSV, YAML, PDF, DOCX, PPTX & more
               </p>
               {dragFiles.length > 0 && (
                 <div className="mt-4 space-y-1">
