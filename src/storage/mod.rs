@@ -23,6 +23,10 @@ pub struct Note {
     pub word_count: i64,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub is_favorite: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +131,11 @@ impl Storage {
                 "fts_triggers",
                 include_str!("../../migrations/002_fts_triggers.sql"),
             ),
+            (
+                3,
+                "categories_favorites",
+                include_str!("../../migrations/003_categories_favorites.sql"),
+            ),
         ];
 
         for (id, name, sql) in &migrations {
@@ -228,6 +237,8 @@ impl Storage {
             word_count,
             created_at: now.clone(),
             updated_at: now,
+            category: None,
+            is_favorite: false,
         })
     }
 
@@ -281,6 +292,8 @@ impl Storage {
             word_count,
             created_at: note.created_at,
             updated_at: now,
+            category: note.category,
+            is_favorite: note.is_favorite,
         })
     }
 
@@ -325,7 +338,7 @@ impl Storage {
     pub fn list_notes(&self, tag: Option<&str>, limit: i64, offset: i64) -> Result<Vec<Note>> {
         let notes = if let Some(tag) = tag {
             self.db.prepare(
-                "SELECT n.id, n.title, n.path, n.content_hash, n.frontmatter, n.tags, n.word_count, n.created_at, n.updated_at
+                "SELECT n.id, n.title, n.path, n.content_hash, n.frontmatter, n.tags, n.word_count, n.created_at, n.updated_at, n.category, n.is_favorite
                  FROM notes n JOIN note_tags nt ON n.id = nt.note_id
                  WHERE n.deleted_at IS NULL AND nt.tag = ?1
                  ORDER BY n.updated_at DESC LIMIT ?2 OFFSET ?3"
@@ -335,7 +348,7 @@ impl Storage {
             .collect()
         } else {
             self.db.prepare(
-                "SELECT id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at
+                "SELECT id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at, category, is_favorite
                  FROM notes WHERE deleted_at IS NULL
                  ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2"
             )?
@@ -437,7 +450,7 @@ impl Storage {
 
     pub fn notes_for_tag(&self, tag: &str) -> Result<Vec<Note>> {
         let notes = self.db.prepare(
-            "SELECT n.id, n.title, n.path, n.content_hash, n.frontmatter, n.tags, n.word_count, n.created_at, n.updated_at
+            "SELECT n.id, n.title, n.path, n.content_hash, n.frontmatter, n.tags, n.word_count, n.created_at, n.updated_at, n.category, n.is_favorite
              FROM notes n
              JOIN note_tags nt ON n.id = nt.note_id
              WHERE n.deleted_at IS NULL AND nt.tag = ?1
@@ -571,12 +584,95 @@ impl Storage {
         Ok(stats)
     }
 
+    /// Compute auto-links between notes based on shared tags and title keyword overlap.
+    ///
+    /// Returns `(source_id, target_id, confidence)` tuples where confidence is the
+    /// Jaccard similarity of tag sets, boosted by title word overlap.
+    pub fn compute_keyword_links(&self) -> Result<Vec<(String, String, f64)>> {
+        use std::collections::HashSet;
+
+        let notes = self.list_notes(None, 100000, 0)?;
+        let mut links = Vec::new();
+
+        // Pre-compute tag sets and title keyword sets
+        let note_data: Vec<(&Note, HashSet<String>, Vec<String>)> = notes
+            .iter()
+            .map(|n| {
+                let tag_set: HashSet<String> = n.tags.iter().cloned().collect();
+                let title_words: Vec<String> = n
+                    .title
+                    .split_whitespace()
+                    .filter(|w| w.len() > 2)
+                    .map(|w| w.to_lowercase())
+                    .collect();
+                (n, tag_set, title_words)
+            })
+            .collect();
+
+        for i in 0..note_data.len() {
+            for j in (i + 1)..note_data.len() {
+                let (note_a, tags_a, words_a) = &note_data[i];
+                let (note_b, tags_b, words_b) = &note_data[j];
+
+                // Jaccard similarity on tags
+                let tag_intersection = tags_a.intersection(tags_b).count() as f64;
+                let tag_union = tags_a.union(tags_b).count() as f64;
+                let tag_sim = if tag_union > 0.0 {
+                    tag_intersection / tag_union
+                } else {
+                    0.0
+                };
+
+                // Title word overlap
+                let words_a_set: HashSet<&str> = words_a.iter().map(|s| s.as_str()).collect();
+                let words_b_set: HashSet<&str> = words_b.iter().map(|s| s.as_str()).collect();
+                let word_intersection = words_a_set.intersection(&words_b_set).count() as f64;
+                let word_union = words_a_set.union(&words_b_set).count() as f64;
+                let title_sim = if word_union > 0.0 {
+                    word_intersection / word_union
+                } else {
+                    0.0
+                };
+
+                // Combined score: tags are primary, title overlap is bonus
+                let score = tag_sim * 0.7 + title_sim * 0.3;
+
+                // Minimum threshold: need at least some similarity
+                if score >= 0.15 && (tag_intersection >= 1.0 || title_sim > 0.5) {
+                    links.push((note_a.id.clone(), note_b.id.clone(), score));
+                }
+            }
+        }
+
+        // Sort by confidence descending
+        links.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(links)
+    }
+
+    // ── Category & Favorites ──────────────────────────────────────
+
+    pub fn set_category(&self, note_id: &str, category: Option<&str>) -> Result<()> {
+        self.db.execute(
+            "UPDATE notes SET category = ?1 WHERE id = ?2",
+            params![category, note_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_favorite(&self, note_id: &str, favorite: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE notes SET is_favorite = ?1 WHERE id = ?2",
+            params![favorite as i64, note_id],
+        )?;
+        Ok(())
+    }
+
     // ── Internal helpers ──────────────────────────────────────────
 
     fn find_note(&self, identifier: &str) -> Result<Note> {
         // Try by ID first, then title, then path
         self.db.query_row(
-            "SELECT id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at
+            "SELECT id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at, category, is_favorite
              FROM notes WHERE (id = ?1 OR title = ?1 OR path LIKE ?2) AND deleted_at IS NULL",
             params![identifier, format!("%{}%", identifier)],
             note_from_row,
@@ -671,6 +767,13 @@ fn note_from_row(row: &rusqlite::Row) -> rusqlite::Result<Note> {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        category: row.get::<_, Option<String>>("category").ok().flatten(),
+        is_favorite: row
+            .get::<_, Option<i64>>("is_favorite")
+            .ok()
+            .flatten()
+            .map(|v| v != 0)
+            .unwrap_or(false),
     })
 }
 

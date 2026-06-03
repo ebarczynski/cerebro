@@ -84,6 +84,24 @@ pub enum Commands {
     /// Reindex all notes from filesystem
     Reindex,
 
+    /// Import a document (PDF, PPTX, ODS, HTML) as a note
+    Import {
+        /// Path to the file to import
+        file: PathBuf,
+        /// Custom title (default: filename without extension)
+        #[arg(long, short)]
+        title: Option<String>,
+        /// Tags to add
+        #[arg(long, short, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Directory path within vault
+        #[arg(long)]
+        path: Option<String>,
+        /// Dry run (show markdown without creating note)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Start MCP server (stdio)
     Mcp,
 
@@ -241,9 +259,11 @@ pub fn run(cli: Cli) -> Result<()> {
             let mut storage = open_storage(&config, profile_name)?;
             cmd_reindex(&mut storage)
         }
-        Commands::Mcp => {
-            crate::mcp::McpServer::run(config)
+        Commands::Import { file, title, tags, path, dry_run } => {
+            let mut storage = open_storage(&config, profile_name)?;
+            cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
+        Commands::Mcp => crate::mcp::McpServer::run(config),
         Commands::Publish { identifier, dry_run } => {
             let storage = open_storage(&config, profile_name)?;
             cmd_publish(&storage, &identifier, dry_run)
@@ -515,6 +535,50 @@ fn cmd_reindex(storage: &mut Storage) -> Result<()> {
     if stats.errors > 0 {
         println!("  Errors: {}", stats.errors);
     }
+    Ok(())
+}
+
+fn cmd_import(
+    storage: &mut Storage,
+    file: &PathBuf,
+    title: Option<&str>,
+    tags: &[String],
+    path: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    println!("Importing {:?}...", file);
+
+    let result = crate::import::import_file(file)?;
+
+    let final_title = title.unwrap_or(&result.title);
+    let mut all_tags = result.tags;
+    all_tags.extend(tags.iter().cloned());
+
+    if dry_run {
+        println!("--- DRY RUN ---");
+        println!("Title: {}", final_title);
+        println!("Format: {}", result.format.name());
+        println!("Tags: {:?}", all_tags);
+        if let Some(p) = path {
+            println!("Path: {}", p);
+        }
+        println!("\n--- Markdown Preview ---\n");
+        println!("{}", result.markdown);
+        return Ok(());
+    }
+
+    let note = storage.create_note(
+        final_title,
+        &result.markdown,
+        path,
+        Some(all_tags),
+    )?;
+
+    println!("✓ Imported {} as note: {}", result.format.name(), note.title);
+    println!("  ID: {}", note.id);
+    println!("  Path: {}", note.path);
+    println!("  Words: {}", note.word_count);
+    println!("  Tags: {:?}", note.tags);
     Ok(())
 }
 

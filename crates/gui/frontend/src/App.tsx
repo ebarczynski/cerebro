@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
 import StatusBar from "./components/StatusBar";
+import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -19,6 +20,8 @@ interface Note {
   word_count?: number;
   created_at?: string;
   updated_at: string;
+  category?: string | null;
+  is_favorite?: boolean;
 }
 
 interface NoteContent {
@@ -55,11 +58,12 @@ function MarkdownPreview({ content }: { content: string }) {
   const [html, setHtml] = useState("");
 
   useEffect(() => {
-    Promise.all([
-      import("marked"),
-      import("highlight.js"),
-    ]).then(async ([{ marked }, hljsModule]) => {
-      const hljs = hljsModule.default;
+    const loadMarkdown = async () => {
+      const [{ marked }, hljsModule] = await Promise.all([
+        import("marked"),
+        import("highlight.js").catch(() => null),
+      ]);
+      const hljs = (hljsModule as any)?.default ?? null;
       try {
         // Custom image renderer for vault attachments
         const renderer = new marked.Renderer();
@@ -88,14 +92,21 @@ function MarkdownPreview({ content }: { content: string }) {
           const lang = token.lang || "";
 
           let highlighted: string;
-          try {
-            if (lang && hljs.getLanguage(lang)) {
-              highlighted = hljs.highlight(code, { language: lang }).value;
-            } else {
-              highlighted = hljs.highlightAuto(code).value;
+          if (hljs) {
+            try {
+              if (lang && hljs.getLanguage(lang)) {
+                highlighted = hljs.highlight(code, { language: lang }).value;
+              } else {
+                highlighted = hljs.highlightAuto(code).value;
+              }
+            } catch {
+              highlighted = code;
             }
-          } catch {
-            highlighted = code;
+          } else {
+            highlighted = code
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
           }
 
           const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
@@ -144,7 +155,8 @@ function MarkdownPreview({ content }: { content: string }) {
       } catch {
         setHtml(`<pre>${content}</pre>`);
       }
-    }).catch(() => {
+    };
+    loadMarkdown().catch(() => {
       setHtml(`<pre>${content}</pre>`);
     });
   }, [content]);
@@ -163,8 +175,11 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
-    invoke<{ nodes: { id: string; title: string; path: string }[]; edges: { source: string; target: string }[] }>("get_graph")
-      .then(async (data) => {
+    Promise.all([
+      invoke<{ nodes: { id: string; title: string; path: string }[]; edges: { source: string; target: string }[] }>("get_graph"),
+      invoke<{ source_id: string; target_id: string; confidence: number }[]>("get_keyword_links"),
+    ])
+      .then(async ([data, keywordLinks]) => {
         if (!svgRef.current || data.nodes.length === 0) return;
 
         const d3 = await import("d3");
@@ -177,7 +192,23 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const nodes: any[] = data.nodes.map((n) => ({ ...n }));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const edges: any[] = data.edges.map((e) => ({ ...e }));
+        const edges: any[] = data.edges.map((e) => ({ ...e, type: "wikilink" }));
+
+        // Add keyword-based edges (avoid exact duplicates with wikilinks)
+        const existingPairs = new Set(edges.map((e: any) => `${e.source}->${e.target}`));
+        for (const kl of keywordLinks) {
+          const fwd = `${kl.source_id}->${kl.target_id}`;
+          const rev = `${kl.target_id}->${kl.source_id}`;
+          if (!existingPairs.has(fwd) && !existingPairs.has(rev)) {
+            edges.push({
+              source: kl.source_id,
+              target: kl.target_id,
+              type: "keyword",
+              confidence: kl.confidence,
+            });
+            existingPairs.add(fwd);
+          }
+        }
 
         const simulation = d3
           .forceSimulation(nodes)
@@ -191,8 +222,9 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
           .selectAll("line")
           .data(edges)
           .join("line")
-          .attr("stroke", "#2a2a3a")
-          .attr("stroke-width", 1);
+          .attr("stroke", (d: any) => d.type === "keyword" ? "#f59e0b60" : "#2a2a3a")
+          .attr("stroke-width", (d: any) => d.type === "keyword" ? 1 : 1.5)
+          .attr("stroke-dasharray", (d: any) => d.type === "keyword" ? "4 3" : "none");
 
         const drag = d3.drag<SVGSVGElement, any>()
           .on("start", (event: any, d: any) => {
@@ -254,6 +286,14 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
       <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[80vw] h-[70vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-[#2a2a3a]">
           <h2 className="text-lg font-semibold text-white">Knowledge Graph</h2>
+          <div className="flex items-center gap-4 text-xs text-[#8888a0]">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-6 h-0.5 bg-[#2a2a3a]" /> Wikilinks
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-6 h-0.5 bg-[#f59e0b60]" style={{ borderTop: '1px dashed #f59e0b60' }} /> Keywords
+            </span>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
         </div>
         <svg ref={svgRef} className="flex-1 w-full" />
@@ -315,6 +355,8 @@ export default function App() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [editorSearchQuery, setEditorSearchQuery] = useState<string>("");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -408,6 +450,8 @@ export default function App() {
 
   const selectNote = useCallback(async (note: Note) => {
     try {
+      // Clear search highlight when switching notes
+      setEditorSearchQuery("");
       const nc = await invoke<NoteContent>("get_note", { identifier: note.path });
       setActiveNote(nc.note);
       setNoteContent(nc.body);
@@ -474,6 +518,34 @@ export default function App() {
     }, 1000);
   }, [activeNote]);
 
+  // ── Category & Favorites ────────────────────────────────────
+
+  const handleSetCategory = useCallback(async (noteId: string, category: string | null) => {
+    try {
+      await invoke("set_note_category", { noteId, category });
+      // Update local notes state
+      setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, category } : n));
+      if (activeNote?.id === noteId) {
+        setActiveNote((prev) => prev ? { ...prev, category } : prev);
+      }
+    } catch (e) {
+      console.error("Failed to set category:", e);
+    }
+  }, [activeNote]);
+
+  const handleToggleFavorite = useCallback(async (noteId: string, favorite: boolean) => {
+    try {
+      await invoke("toggle_note_favorite", { noteId, favorite });
+      // Update local notes state
+      setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, is_favorite: favorite } : n));
+      if (activeNote?.id === noteId) {
+        setActiveNote((prev) => prev ? { ...prev, is_favorite: favorite } : prev);
+      }
+    } catch (e) {
+      console.error("Failed to toggle favorite:", e);
+    }
+  }, [activeNote]);
+
   // ── Search ─────────────────────────────────────────────────
 
   const handleSearch = useCallback(async (query: string) => {
@@ -481,6 +553,8 @@ export default function App() {
       setSearchResults([]);
       return;
     }
+    // Store the query so we can pass it to the Editor for in-document highlighting
+    setEditorSearchQuery(query);
     try {
       const results = await invoke<SearchResult[]>("search_notes", { req: { query, limit: 20 } });
       setSearchResults(results);
@@ -567,6 +641,42 @@ export default function App() {
     } catch (e) {
       console.error("Reindex failed:", e);
     }
+  }, []);
+
+  // ── Document import ─────────────────────────────────────────
+
+  const handleImportComplete = useCallback(async (responses: ImportResponse[]) => {
+    // Reload notes and tags to include the imported ones
+    const [notesList, tagsList] = await Promise.all([
+      invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+      invoke<TagInfo[]>("list_tags"),
+    ]);
+    setNotes(notesList);
+    setTags(tagsList);
+
+    // If only one file was imported, open it
+    if (responses.length === 1) {
+      const resp = responses[0];
+      try {
+        const nc = await invoke<NoteContent>("get_note", { identifier: resp.note_path });
+        setActiveNote(nc.note);
+        setNoteContent(nc.body);
+        setWordCount(nc.body.split(/\s+/).filter(Boolean).length);
+      } catch (e) {
+        console.error("Failed to open imported note:", e);
+      }
+    }
+
+    const msg = responses.length === 1
+      ? `Imported: ${responses[0].title} (${responses[0].format})`
+      : `Imported ${responses.length} documents`;
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
+  const handleImportError = useCallback((message: string) => {
+    setToastMessage(`❌ ${message}`);
+    setTimeout(() => setToastMessage(null), 5000);
   }, []);
 
   // ── Keyboard shortcuts ─────────────────────────────────────
@@ -673,6 +783,13 @@ export default function App() {
             </svg>
           </button>
 
+          {/* Import documents button — rendered by ImportDropZone */}
+          <ImportDropZone
+            onImportComplete={handleImportComplete}
+            onError={handleImportError}
+            vaultOpen={vaultOpen}
+          />
+
           {/* Backlinks toggle */}
           <button
             onClick={() => setRightPanelOpen(!rightPanelOpen)}
@@ -721,6 +838,8 @@ export default function App() {
             onReindex={handleReindex}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            onSetCategory={handleSetCategory}
+            onToggleFavorite={handleToggleFavorite}
           />
         )}
 
@@ -734,6 +853,8 @@ export default function App() {
                     value={noteContent}
                     onChange={handleContentChange}
                     onSave={saveNote}
+                    searchQuery={editorSearchQuery}
+                    onSearchQueryCleared={() => setEditorSearchQuery("")}
                   />
                 </div>
               )}
@@ -803,6 +924,15 @@ export default function App() {
 
       {/* Graph view */}
       {graphOpen && <GraphViewPanel onClose={() => setGraphOpen(false)} />}
+
+      {/* Toast notifications */}
+      {toastMessage && (
+        <div className="fixed bottom-14 right-4 z-50 animate-fade-in">
+          <div className="bg-[#1e1e2e] border border-[#2a2a3a] rounded-lg px-4 py-3 shadow-xl max-w-sm">
+            <p className="text-sm text-white">{toastMessage}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
