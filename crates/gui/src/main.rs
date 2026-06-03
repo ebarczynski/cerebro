@@ -487,6 +487,46 @@ async fn kp_health(state: State<'_, AppState>) -> Result<bool, String> {
     connector.health_check().await.map_err(|e| e.to_string())
 }
 
+// ── Keyword Links (Knowledge Graph) ──────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KeywordLink {
+    pub source_id: String,
+    pub target_id: String,
+    pub confidence: f64,
+}
+
+#[tauri::command]
+fn get_keyword_links(state: State<AppState>) -> Result<Vec<KeywordLink>, String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let links = storage.compute_keyword_links().map_err(|e| e.to_string())?;
+    Ok(links.into_iter().map(|(source, target, confidence)| KeywordLink {
+        source_id: source,
+        target_id: target,
+        confidence,
+    }).collect())
+}
+
+// ── Category & Favorites ─────────────────────────────────────
+
+#[tauri::command]
+fn set_note_category(state: State<AppState>, note_id: String, category: Option<String>) -> Result<(), String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    storage.set_category(&note_id, category.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_note_favorite(state: State<AppState>, note_id: String, favorite: bool) -> Result<(), String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    storage.set_favorite(&note_id, favorite).map_err(|e| e.to_string())
+}
+
 // ── Reindex ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -685,6 +725,9 @@ pub fn run() {
             get_daily_note,
             kp_search,
             kp_health,
+            set_note_category,
+            toggle_note_favorite,
+            get_keyword_links,
             reindex,
             save_image,
             read_image_as_base64,

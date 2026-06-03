@@ -20,6 +20,8 @@ interface Note {
   word_count?: number;
   created_at?: string;
   updated_at: string;
+  category?: string | null;
+  is_favorite?: boolean;
 }
 
 interface NoteContent {
@@ -173,8 +175,11 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
-    invoke<{ nodes: { id: string; title: string; path: string }[]; edges: { source: string; target: string }[] }>("get_graph")
-      .then(async (data) => {
+    Promise.all([
+      invoke<{ nodes: { id: string; title: string; path: string }[]; edges: { source: string; target: string }[] }>("get_graph"),
+      invoke<{ source_id: string; target_id: string; confidence: number }[]>("get_keyword_links"),
+    ])
+      .then(async ([data, keywordLinks]) => {
         if (!svgRef.current || data.nodes.length === 0) return;
 
         const d3 = await import("d3");
@@ -187,7 +192,23 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const nodes: any[] = data.nodes.map((n) => ({ ...n }));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const edges: any[] = data.edges.map((e) => ({ ...e }));
+        const edges: any[] = data.edges.map((e) => ({ ...e, type: "wikilink" }));
+
+        // Add keyword-based edges (avoid exact duplicates with wikilinks)
+        const existingPairs = new Set(edges.map((e: any) => `${e.source}->${e.target}`));
+        for (const kl of keywordLinks) {
+          const fwd = `${kl.source_id}->${kl.target_id}`;
+          const rev = `${kl.target_id}->${kl.source_id}`;
+          if (!existingPairs.has(fwd) && !existingPairs.has(rev)) {
+            edges.push({
+              source: kl.source_id,
+              target: kl.target_id,
+              type: "keyword",
+              confidence: kl.confidence,
+            });
+            existingPairs.add(fwd);
+          }
+        }
 
         const simulation = d3
           .forceSimulation(nodes)
@@ -201,8 +222,9 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
           .selectAll("line")
           .data(edges)
           .join("line")
-          .attr("stroke", "#2a2a3a")
-          .attr("stroke-width", 1);
+          .attr("stroke", (d: any) => d.type === "keyword" ? "#f59e0b60" : "#2a2a3a")
+          .attr("stroke-width", (d: any) => d.type === "keyword" ? 1 : 1.5)
+          .attr("stroke-dasharray", (d: any) => d.type === "keyword" ? "4 3" : "none");
 
         const drag = d3.drag<SVGSVGElement, any>()
           .on("start", (event: any, d: any) => {
@@ -264,6 +286,14 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
       <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[80vw] h-[70vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-[#2a2a3a]">
           <h2 className="text-lg font-semibold text-white">Knowledge Graph</h2>
+          <div className="flex items-center gap-4 text-xs text-[#8888a0]">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-6 h-0.5 bg-[#2a2a3a]" /> Wikilinks
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-6 h-0.5 bg-[#f59e0b60]" style={{ borderTop: '1px dashed #f59e0b60' }} /> Keywords
+            </span>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
         </div>
         <svg ref={svgRef} className="flex-1 w-full" />
@@ -325,6 +355,7 @@ export default function App() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [editorSearchQuery, setEditorSearchQuery] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -419,6 +450,8 @@ export default function App() {
 
   const selectNote = useCallback(async (note: Note) => {
     try {
+      // Clear search highlight when switching notes
+      setEditorSearchQuery("");
       const nc = await invoke<NoteContent>("get_note", { identifier: note.path });
       setActiveNote(nc.note);
       setNoteContent(nc.body);
@@ -485,6 +518,34 @@ export default function App() {
     }, 1000);
   }, [activeNote]);
 
+  // ── Category & Favorites ────────────────────────────────────
+
+  const handleSetCategory = useCallback(async (noteId: string, category: string | null) => {
+    try {
+      await invoke("set_note_category", { noteId, category });
+      // Update local notes state
+      setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, category } : n));
+      if (activeNote?.id === noteId) {
+        setActiveNote((prev) => prev ? { ...prev, category } : prev);
+      }
+    } catch (e) {
+      console.error("Failed to set category:", e);
+    }
+  }, [activeNote]);
+
+  const handleToggleFavorite = useCallback(async (noteId: string, favorite: boolean) => {
+    try {
+      await invoke("toggle_note_favorite", { noteId, favorite });
+      // Update local notes state
+      setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, is_favorite: favorite } : n));
+      if (activeNote?.id === noteId) {
+        setActiveNote((prev) => prev ? { ...prev, is_favorite: favorite } : prev);
+      }
+    } catch (e) {
+      console.error("Failed to toggle favorite:", e);
+    }
+  }, [activeNote]);
+
   // ── Search ─────────────────────────────────────────────────
 
   const handleSearch = useCallback(async (query: string) => {
@@ -492,6 +553,8 @@ export default function App() {
       setSearchResults([]);
       return;
     }
+    // Store the query so we can pass it to the Editor for in-document highlighting
+    setEditorSearchQuery(query);
     try {
       const results = await invoke<SearchResult[]>("search_notes", { req: { query, limit: 20 } });
       setSearchResults(results);
@@ -775,6 +838,8 @@ export default function App() {
             onReindex={handleReindex}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            onSetCategory={handleSetCategory}
+            onToggleFavorite={handleToggleFavorite}
           />
         )}
 
@@ -788,6 +853,8 @@ export default function App() {
                     value={noteContent}
                     onChange={handleContentChange}
                     onSave={saveNote}
+                    searchQuery={editorSearchQuery}
+                    onSearchQueryCleared={() => setEditorSearchQuery("")}
                   />
                 </div>
               )}

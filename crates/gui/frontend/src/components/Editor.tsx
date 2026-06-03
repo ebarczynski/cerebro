@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
@@ -7,16 +7,47 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightAc
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput, foldKeymap } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete';
-import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { searchKeymap, highlightSelectionMatches, search, SearchQuery, getSearchQuery, setSearchQuery, findNext, findPrevious } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { Extension, EditorState } from '@codemirror/state';
 import { invoke } from "@tauri-apps/api/core";
+
+const FONT_SIZE_STORAGE_KEY = 'cerebro-editor-font-size';
+const DEFAULT_FONT_SIZE = 14;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+
+function loadFontSize(): number {
+  try {
+    const stored = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+    if (stored) {
+      const parsed = parseInt(stored, 10);
+      if (!isNaN(parsed) && parsed >= MIN_FONT_SIZE && parsed <= MAX_FONT_SIZE) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return DEFAULT_FONT_SIZE;
+}
+
+/**
+ * NOTE: Search highlighting uses CodeMirror's built-in @codemirror/search extension.
+ * The actual full-text search (SQLite FTS5 with Porter stemmer via `search_notes` Tauri
+ * command) remains the primary search backend — it is optimal for this local vault use
+ * case: in-process (no IPC overhead like ripgrep), integrated ranking, Porter stemming,
+ * and works with Tauri's embedded SQLite. This editor-level highlighting is purely a
+ * visual complement to navigate within a loaded note after selecting a search result.
+ */
 
 interface EditorProps {
   value: string;
   onChange: (val: string) => void;
   onSave: () => void;
   readOnly?: boolean;
+  /** When set, highlights all matches of this query in the editor and jumps to the first match */
+  searchQuery?: string;
+  /** Called when the user dismisses the search highlight (Escape) */
+  onSearchQueryCleared?: () => void;
 }
 
 const cerebroTheme = EditorView.theme({
@@ -24,7 +55,6 @@ const cerebroTheme = EditorView.theme({
     backgroundColor: '#0a0a0f',
     color: '#d4d4d8',
     height: '100%',
-    fontSize: '14px',
   },
   '.cm-content': {
     caretColor: '#6366f1',
@@ -130,10 +160,15 @@ function useDebounce<T extends (...args: any[]) => void>(callback: T, delay: num
   );
 }
 
-const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = false }) => {
+const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = false, searchQuery, onSearchQueryCleared }) => {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const localValueRef = useRef<string>(value);
   const isExternalUpdate = useRef<boolean>(false);
+  const [matchInfo, setMatchInfo] = useState<{ current: number; total: number } | null>(null);
+  const searchQueryRef = useRef<string | undefined>(searchQuery);
+  const [fontSize, setFontSize] = useState<number>(loadFontSize);
+  const [fontSizeToast, setFontSizeToast] = useState<string | null>(null);
+  const fontSizeToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const debouncedOnChange = useDebounce((val: string) => {
     onChange(val);
@@ -154,6 +189,143 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     [debouncedOnChange]
   );
 
+  // ── Font size adjustment with toast feedback ──────────────
+  const showFontSizeToast = useCallback((size: number) => {
+    if (fontSizeToastTimer.current) {
+      clearTimeout(fontSizeToastTimer.current);
+    }
+    setFontSizeToast(`${size}px`);
+    fontSizeToastTimer.current = setTimeout(() => setFontSizeToast(null), 1500);
+  }, []);
+
+  const adjustFontSize = useCallback((delta: number) => {
+    setFontSize((prev) => {
+      const next = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, prev + delta));
+      if (next !== prev) {
+        try {
+          localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(next));
+        } catch {}
+        showFontSizeToast(next);
+      }
+      return next;
+    });
+    return true;
+  }, [showFontSizeToast]);
+
+  const resetFontSize = useCallback(() => {
+    setFontSize(DEFAULT_FONT_SIZE);
+    try {
+      localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(DEFAULT_FONT_SIZE));
+    } catch {}
+    showFontSizeToast(DEFAULT_FONT_SIZE);
+    return true;
+  }, [showFontSizeToast]);
+
+  // Font size keyboard shortcuts keymap
+  const fontSizeKeymap = keymap.of([
+    {
+      key: 'Mod-=',
+      run: () => adjustFontSize(1),
+      preventDefault: true,
+    },
+    {
+      key: 'Mod-Plus',
+      run: () => adjustFontSize(1),
+      preventDefault: true,
+    },
+    {
+      key: 'Mod-Minus',
+      run: () => adjustFontSize(-1),
+      preventDefault: true,
+    },
+    {
+      key: 'Mod-0',
+      run: () => resetFontSize(),
+      preventDefault: true,
+    },
+  ]);
+
+  // Dynamic font size theme — overrides the base fontSize
+  const fontSizeTheme = EditorView.theme({
+    '&': {
+      fontSize: `${fontSize}px`,
+    },
+  });
+
+  // ── Search query highlighting ─────────────────────────────
+
+  // Keep ref in sync for use in update listener
+  searchQueryRef.current = searchQuery;
+
+  // Count matches and determine current match position relative to the cursor
+  const updateMatchInfo = useCallback((view: EditorView) => {
+    const query = getSearchQuery(view.state);
+    if (!query.search || !query.valid) {
+      setMatchInfo(null);
+      return;
+    }
+    const matches: { from: number; to: number }[] = [];
+    const cursor = query.getCursor(view.state);
+    let iterResult = cursor.next();
+    while (!iterResult.done) {
+      matches.push({ from: iterResult.value.from, to: iterResult.value.to });
+      iterResult = cursor.next();
+    }
+    const total = matches.length;
+    if (total === 0) {
+      setMatchInfo(null);
+      return;
+    }
+    // Find the match closest after the main selection head
+    const head = view.state.selection.main.head;
+    let current = 1;
+    for (let i = 0; i < matches.length; i++) {
+      if (matches[i].from >= head) {
+        current = i + 1;
+        break;
+      }
+      if (i === matches.length - 1) {
+        current = 1; // wrap around
+      }
+    }
+    setMatchInfo({ current, total });
+  }, []);
+
+  // Apply search query when it changes (set from parent via SearchModal selection)
+  useEffect(() => {
+    const view = cmRef.current?.view;
+    if (!view) return;
+
+    if (searchQuery && searchQuery.trim()) {
+      const sq = new SearchQuery({ search: searchQuery, caseSensitive: false });
+      view.dispatch({
+        effects: setSearchQuery.of(sq),
+      });
+      // Jump to first match
+      findNext(view);
+      updateMatchInfo(view);
+    } else {
+      // Clear search when query is cleared / note switches
+      const current = getSearchQuery(view.state);
+      if (current.search) {
+        view.dispatch({
+          effects: setSearchQuery.of(new SearchQuery({ search: '' })),
+        });
+      }
+      setMatchInfo(null);
+    }
+  }, [searchQuery, updateMatchInfo]);
+
+  // Update match info on editor content changes or selection changes
+  const searchUpdateListener = EditorView.updateListener.of((update) => {
+    if (update.docChanged || update.selectionSet) {
+      const query = getSearchQuery(update.state);
+      if (query.search && query.valid) {
+        updateMatchInfo(update.view);
+      }
+    }
+  });
+
   const saveKeymap = keymap.of([
     {
       key: 'Mod-s',
@@ -162,6 +334,55 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
         return true;
       },
       preventDefault: true,
+    },
+  ]);
+
+  // Search navigation keymap: F3/Shift+F3 + Escape to clear + Enter to cycle
+  const searchNavKeymap = keymap.of([
+    {
+      key: 'F3',
+      run: (view) => {
+        findNext(view);
+        updateMatchInfo(view);
+        return true;
+      },
+      preventDefault: true,
+    },
+    {
+      key: 'Shift-F3',
+      run: (view) => {
+        findPrevious(view);
+        updateMatchInfo(view);
+        return true;
+      },
+      preventDefault: true,
+    },
+    {
+      key: 'Escape',
+      run: (view) => {
+        const q = getSearchQuery(view.state);
+        if (q.search) {
+          view.dispatch({
+            effects: setSearchQuery.of(new SearchQuery({ search: '' })),
+          });
+          setMatchInfo(null);
+          onSearchQueryCleared?.();
+          return true;
+        }
+        return false;
+      },
+    },
+    {
+      key: 'Enter',
+      run: (view) => {
+        const q = getSearchQuery(view.state);
+        if (q.search) {
+          findNext(view);
+          updateMatchInfo(view);
+          return true;
+        }
+        return false;
+      },
     },
   ]);
 
@@ -238,6 +459,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
 
   const extensions: Extension[] = [
     cerebroTheme,
+    fontSizeTheme,
     cerebroHighlightStyle,
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -253,6 +475,8 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     closeBrackets(),
     autocompletion(),
     highlightSelectionMatches(),
+    search(),
+    searchUpdateListener,
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage, codeLanguages: languages }),
     keymap.of([
@@ -266,6 +490,8 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
       indentWithTab,
     ]),
     saveKeymap,
+    fontSizeKeymap,
+    searchNavKeymap,
     imageHandlers,
   ];
 
@@ -274,7 +500,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
   }
 
   return (
-    <div className="h-full w-full overflow-hidden" style={{ backgroundColor: '#0a0a0f' }}>
+    <div className="h-full w-full overflow-hidden relative" style={{ backgroundColor: '#0a0a0f' }}>
       <CodeMirror
         ref={cmRef}
         value={value}
@@ -285,9 +511,56 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
         className="h-full w-full"
         style={{
           height: '100%',
-          fontSize: '14px',
         }}
       />
+      {/* Font size toast overlay */}
+      {fontSizeToast && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 16,
+            right: 16,
+            backgroundColor: '#1e1e2e',
+            border: '1px solid #2a2a3a',
+            borderRadius: 8,
+            padding: '6px 14px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+            zIndex: 50,
+            pointerEvents: 'none',
+            animation: 'fadeIn 0.15s ease-out',
+          }}
+        >
+          <span style={{ color: '#a5b4fc', fontSize: 13, fontFamily: 'monospace' }}>
+            {fontSizeToast}
+          </span>
+        </div>
+      )}
+      {/* Search match info overlay */}
+      {matchInfo && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            backgroundColor: '#1e1e2e',
+            border: '1px solid #2a2a3a',
+            borderRadius: 6,
+            padding: '3px 10px',
+            zIndex: 50,
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <span style={{ color: '#a5b4fc', fontSize: 12, fontFamily: 'monospace' }}>
+            {matchInfo.current}/{matchInfo.total} matches
+          </span>
+          <span style={{ color: '#52525b', fontSize: 10 }}>
+            F3↓ ↑Shift+F3 Esc✕
+          </span>
+        </div>
+      )}
     </div>
   );
 };
