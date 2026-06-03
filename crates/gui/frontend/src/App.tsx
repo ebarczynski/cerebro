@@ -491,6 +491,9 @@ export default function App() {
   }, [activeNote, noteContent]);
 
   const deleteNote = useCallback(async (note: Note) => {
+    const confirmed = window.confirm(`Delete "${note.title}"? This cannot be undone.`);
+    if (!confirmed) return;
+
     try {
       await invoke("delete_note", { identifier: note.path });
       setNotes((prev) => prev.filter((n) => n.id !== note.id));
@@ -840,6 +843,7 @@ export default function App() {
             onSearchChange={setSearchQuery}
             onSetCategory={handleSetCategory}
             onToggleFavorite={handleToggleFavorite}
+            onDeleteNote={deleteNote}
           />
         )}
 

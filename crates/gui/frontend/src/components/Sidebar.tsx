@@ -47,6 +47,7 @@ interface SidebarProps {
   onSearchChange: (query: string) => void;
   onSetCategory?: (noteId: string, category: string | null) => void;
   onToggleFavorite?: (noteId: string, favorite: boolean) => void;
+  onDeleteNote?: (note: Note) => void;
 }
 
 // --- Context Menu State ---
@@ -137,6 +138,7 @@ export default function Sidebar({
   onSearchChange,
   onSetCategory,
   onToggleFavorite,
+  onDeleteNote,
 }: SidebarProps) {
   const [tagsExpanded, setTagsExpanded] = useState(true);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -190,10 +192,14 @@ export default function Sidebar({
   );
 
   const handleDeleteNote = useCallback(() => {
-    // Note: delete is handled via context menu; parent would need an onDeleteNote prop.
-    // For now we just close the menu. The app can wire this to a delete handler.
+    if (contextMenu.noteId && onDeleteNote) {
+      const note = notes.find((n) => n.id === contextMenu.noteId);
+      if (note) {
+        onDeleteNote(note);
+      }
+    }
     setContextMenu((prev) => ({ ...prev, visible: false }));
-  }, []);
+  }, [contextMenu.noteId, notes, onDeleteNote]);
 
   // Category tabs — built-in defaults + any custom categories found in notes
   const builtinCategories = ["estimations", "tech decisions", "dailies"];
