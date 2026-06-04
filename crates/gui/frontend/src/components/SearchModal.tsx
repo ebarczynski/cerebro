@@ -11,7 +11,7 @@ export interface SearchResult {
 interface SearchModalProps {
   open: boolean;
   onClose: () => void;
-  onNavigate: (path: string) => void;
+  onNavigate: (path: string, query: string) => void;
   results: SearchResult[];
   onSearch: (query: string) => void;
 }
@@ -105,20 +105,15 @@ const SearchModal: React.FC<SearchModalProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [lastSearchedQuery, setLastSearchedQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
   const recentFiles = getRecentFiles();
 
   const displayItems = query.trim() ? results : recentFiles;
 
-  // Whether the displayed results match the current query
-  const resultsAreStale = query.trim() !== '' && query.trim() !== lastSearchedQuery;
-
   useEffect(() => {
     if (open) {
       setQuery('');
-      setLastSearchedQuery('');
       setSelectedIndex(0);
       // Slight delay to ensure the DOM is ready before focusing
       requestAnimationFrame(() => {
@@ -136,18 +131,11 @@ const SearchModal: React.FC<SearchModalProps> = ({
       if ('rank' in item) {
         addRecentFile(item.title, item.path);
       }
-      onNavigate(item.path);
+      onNavigate(item.path, query);
       onClose();
     },
-    [onNavigate, onClose]
+    [onNavigate, onClose, query]
   );
-
-  const executeSearch = useCallback(() => {
-    if (query.trim()) {
-      setLastSearchedQuery(query.trim());
-      onSearch(query);
-    }
-  }, [query, onSearch]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -168,14 +156,8 @@ const SearchModal: React.FC<SearchModalProps> = ({
         }
         case 'Enter': {
           e.preventDefault();
-          if (resultsAreStale) {
-            // Query changed since last search — fire search first
-            executeSearch();
-          } else if (displayItems.length > 0 && selectedIndex < displayItems.length) {
+          if (displayItems.length > 0 && selectedIndex < displayItems.length) {
             handleSelect(displayItems[selectedIndex]);
-          } else if (query.trim() && results.length === 0) {
-            // Fresh query, never searched yet
-            executeSearch();
           }
           break;
         }
@@ -186,7 +168,7 @@ const SearchModal: React.FC<SearchModalProps> = ({
         }
       }
     },
-    [displayItems, selectedIndex, handleSelect, onClose, resultsAreStale, executeSearch, query, results.length]
+    [displayItems, selectedIndex, handleSelect, onClose]
   );
 
   // Scroll selected item into view
@@ -202,7 +184,9 @@ const SearchModal: React.FC<SearchModalProps> = ({
   }, [selectedIndex]);
 
   const handleQueryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setQuery(e.target.value);
+    const newQuery = e.target.value;
+    setQuery(newQuery);
+    onSearch(newQuery);
   };
 
   const handleBackdropClick = (e: React.MouseEvent) => {
@@ -309,7 +293,7 @@ const SearchModal: React.FC<SearchModalProps> = ({
             value={query}
             onChange={handleQueryChange}
             onKeyDown={handleKeyDown}
-            placeholder="Type a search phrase, then press Enter..."
+            placeholder="Search notes..."
             className="flex-1 bg-transparent text-sm text-zinc-200 placeholder-zinc-600 outline-none"
             spellCheck={false}
           />
@@ -348,13 +332,11 @@ const SearchModal: React.FC<SearchModalProps> = ({
                 />
               </svg>
               <p className="text-xs text-zinc-600">
-                {resultsAreStale
-                  ? 'Press Enter to search'
-                  : query.trim()
-                    ? 'No results found'
-                    : 'No recent files'}
+                {query.trim()
+                  ? 'No results found'
+                  : 'No recent files'}
               </p>
-              {query.trim() && !resultsAreStale && (
+              {query.trim() && (
                 <p className="text-[11px] text-zinc-700 mt-1">
                   Try a different search term
                 </p>
@@ -372,7 +354,7 @@ const SearchModal: React.FC<SearchModalProps> = ({
             </span>
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 bg-zinc-800/50 rounded border border-zinc-700/50 text-[9px]">↵</kbd>
-              search / open
+              open
             </span>
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 bg-zinc-800/50 rounded border border-zinc-700/50 text-[9px]">esc</kbd>

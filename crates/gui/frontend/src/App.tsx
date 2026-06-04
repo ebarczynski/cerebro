@@ -334,6 +334,13 @@ function WelcomeScreen({ onOpen, onCreate }: { onOpen: () => void; onCreate: () 
 
 // ── Main App ───────────────────────────────────────────────────
 
+const LAST_VAULT_KEY = 'cerebro-last-vault';
+
+interface LastVault {
+  profile: string;
+  path: string;
+}
+
 export default function App() {
   // State
   const [notes, setNotes] = useState<Note[]>([]);
@@ -387,6 +394,11 @@ export default function App() {
 
       const ap = profilesList.find((p) => p.is_active) || profilesList[0] || null;
       setActiveProfile(ap);
+
+      // Persist last opened vault for auto-loading on next startup
+      try {
+        localStorage.setItem(LAST_VAULT_KEY, JSON.stringify({ profile, path }));
+      } catch {}
     } catch (e) {
       console.error("Failed to load vault:", e);
       setVaultOpen(false);
@@ -418,14 +430,28 @@ export default function App() {
     }
   }, [loadVault]);
 
-  // Auto-load on mount
+  // Auto-load on mount — try last opened vault, fall back to "personal"
   useEffect(() => {
     (async () => {
       try {
         const home = await homeDir();
-        const defaultPath = `${home}.cerebro/profiles/personal`;
-        // Try to open default vault silently
-        await invoke('open_vault', { path: defaultPath, profile: 'personal' });
+
+        // Try to restore the last opened vault
+        let profile = 'personal';
+        let defaultPath = `${home}.cerebro/profiles/personal`;
+        try {
+          const stored = localStorage.getItem(LAST_VAULT_KEY);
+          if (stored) {
+            const last = JSON.parse(stored) as LastVault;
+            if (last.profile && last.path) {
+              profile = last.profile;
+              defaultPath = last.path;
+            }
+          }
+        } catch {}
+
+        // Try to open vault silently
+        await invoke('open_vault', { path: defaultPath, profile });
         setVaultOpen(true);
 
         const [notesList, tagsList, profilesList] = await Promise.all([
@@ -556,8 +582,6 @@ export default function App() {
       setSearchResults([]);
       return;
     }
-    // Store the query so we can pass it to the Editor for in-document highlighting
-    setEditorSearchQuery(query);
     try {
       const results = await invoke<SearchResult[]>("search_notes", { req: { query, limit: 20 } });
       setSearchResults(results);
@@ -566,13 +590,22 @@ export default function App() {
     }
   }, []);
 
-  const handleSearchSelect = useCallback(async (path: string) => {
+  const handleSearchSelect = useCallback(async (path: string, query: string) => {
     try {
       const nc = await invoke<NoteContent>("get_note", { identifier: path });
       setActiveNote(nc.note);
       setNoteContent(nc.body);
       setSearchOpen(false);
       setWordCount(nc.body.split(/\s+/).filter(Boolean).length);
+
+      // Highlight the search query in the editor after the document loads
+      if (query.trim()) {
+        setEditorSearchQuery(query);
+      }
+
+      // Load backlinks for the opened note
+      const bl = await invoke<any[]>("get_backlinks", { identifier: path });
+      setBacklinks(bl);
     } catch (e) {
       console.error("Failed to open search result:", e);
     }
@@ -890,7 +923,7 @@ export default function App() {
                     {backlinks.map((bl, i) => (
                       <button
                         key={i}
-                        onClick={() => handleSearchSelect(bl.target_ref || "")}
+                        onClick={() => handleSearchSelect(bl.target_ref || "", "")}
                         className="w-full text-left p-2 rounded-lg bg-[#1a1a25] hover:bg-[#2a2a3a] transition-colors"
                       >
                         <p className="text-sm text-white truncate">{bl.target_ref}</p>
