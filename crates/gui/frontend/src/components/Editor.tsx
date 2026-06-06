@@ -6,7 +6,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine, drawSelection, rectangularSelection, crosshairCursor } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput, foldKeymap } from '@codemirror/language';
-import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete';
+import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, CompletionContext, CompletionResult } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches, search, SearchQuery, getSearchQuery, setSearchQuery, findNext, findPrevious, replaceNext, replaceAll } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { Extension, EditorState } from '@codemirror/state';
@@ -48,6 +48,10 @@ interface EditorProps {
   searchQuery?: string;
   /** Called when the user dismisses the search highlight (Escape) */
   onSearchQueryCleared?: () => void;
+  /** All note titles in the vault, for wikilink autocomplete */
+  noteTitles?: string[];
+  /** Navigate to a note by title/path */
+  onNavigateNote?: (path: string) => void;
 }
 
 const cerebroTheme = EditorView.theme({
@@ -164,7 +168,7 @@ function useDebounce<T extends (...args: any[]) => void>(callback: T, delay: num
   );
 }
 
-const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = false, searchQuery, onSearchQueryCleared }) => {
+const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = false, searchQuery, onSearchQueryCleared, noteTitles = [], onNavigateNote }) => {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const localValueRef = useRef<string>(value);
   const isExternalUpdate = useRef<boolean>(false);
@@ -431,7 +435,56 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     },
   ]);
 
-  // Image paste and drag-drop handler
+  // ── Wikilink autocomplete ─────────────────────────────────
+  // Ref to always have latest note titles without re-creating the extension
+  const noteTitlesRef = useRef(noteTitles);
+  noteTitlesRef.current = noteTitles;
+
+  const wikilinkCompletion = useCallback((context: CompletionContext): CompletionResult | null => {
+    // Find if cursor is inside [[... text
+    const line = context.state.doc.lineAt(context.pos);
+    const lineText = line.text;
+    const cursorInLine = context.pos - line.from;
+
+    // Find the last unclosed [[ before the cursor
+    const openIdx = lineText.lastIndexOf('[[', cursorInLine);
+    if (openIdx === -1 || openIdx > cursorInLine) return null;
+
+    // Check there's no closing ]] between [[ and cursor
+    const closeIdx = lineText.indexOf(']]', openIdx);
+    if (closeIdx !== -1 && closeIdx < cursorInLine) return null;
+
+    // Don't trigger if preceded by ! (transclusion)
+    if (openIdx > 0 && lineText[openIdx - 1] === '!') return null;
+
+    const query = lineText.slice(openIdx + 2, cursorInLine).trim();
+    const titles = noteTitlesRef.current;
+
+    if (!query && titles.length > 100) {
+      // Don't show completions for empty query if too many notes (perf)
+      return null;
+    }
+
+    const lowerQuery = query.toLowerCase();
+    const matches = titles
+      .filter(t => t.toLowerCase().includes(lowerQuery))
+      .slice(0, 30);
+
+    if (matches.length === 0) return null;
+
+    return {
+      from: line.from + openIdx + 2,
+      options: matches.map(title => ({
+        label: title,
+        type: 'text',
+        detail: 'note',
+        apply: title + ']]',
+        boost: title.toLowerCase().startsWith(lowerQuery) ? 2 : 0,
+      })),
+      filter: false, // we already filtered above
+    };
+  }, []);
+
   const imageHandlers = EditorView.domEventHandlers({
     paste(event) {
       const items = event.clipboardData?.items;
@@ -518,7 +571,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
     indentOnInput(),
     bracketMatching(),
     closeBrackets(),
-    autocompletion(),
+    autocompletion({ override: [wikilinkCompletion] }),
     highlightSelectionMatches(),
     search(),
     searchUpdateListener,

@@ -12,7 +12,7 @@ use serde_json::Value;
 
 pub use frontmatter::{parse_frontmatter, split_frontmatter, Frontmatter};
 pub use tags::{extract_inline_tags, merge_tags, normalize_tag};
-pub use wikilinks::{extract_wikilinks, Wikilink};
+pub use wikilinks::{extract_transclusions, extract_wikilinks, Transclusion, Wikilink};
 
 /// Complete parsed result for a single note.
 #[derive(Debug, Clone)]

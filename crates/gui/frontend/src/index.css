@@ -279,3 +279,48 @@ html, body, #root {
 .animate-pulse {
   animation: pulse 2s ease-in-out infinite;
 }
+
+/* ── Mermaid diagram styling ──────────────────────────────────── */
+
+.mermaid-wrapper {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--cerebro-surface, #0a0a0f);
+  border: 1px solid var(--cerebro-border, #2a2a3a);
+  border-radius: 8px;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.mermaid-wrapper svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  background: #1a0a0a;
+  border-color: #ef444430;
+}
+
+.mermaid-src {
+  display: none;
+}
+
+/* ── Wikilink styling ──────────────────────────────────────────── */
+
+.markdown-preview a.wikilink {
+  color: #a5b4fc;
+  text-decoration: none;
+  background: #6366f115;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border-bottom: 1px dashed #6366f160;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.markdown-preview a.wikilink:hover {
+  background: #6366f130;
+  color: #c7d2fe;
+  text-decoration: none;
+}

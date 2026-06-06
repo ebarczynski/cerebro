@@ -6,10 +6,12 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, Config as NotifyConfig, EventKind};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::{FileDialogBuilder, DialogExt};
 
 use cerebro::config::app::Config;
@@ -22,6 +24,7 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub storage: Mutex<Option<Storage>>,
     pub profile_config: Mutex<Option<ProfileConfig>>,
+    pub watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
 // ── DTOs for the frontend ──────────────────────────────────────
@@ -87,6 +90,12 @@ pub struct VaultInfo {
     pub path: String,
     pub note_count: usize,
     pub tag_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TemplateInfo {
+    pub name: String,
+    pub path: String,
 }
 
 // ── Vault Management ───────────────────────────────────────────
@@ -544,6 +553,122 @@ fn reindex(state: State<AppState>) -> Result<serde_json::Value, String> {
     }))
 }
 
+// ── Templates ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_templates(state: State<AppState>) -> Result<Vec<TemplateInfo>, String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let templates_dir = storage.notes_dir_path().join("templates");
+
+    if !templates_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut templates = Vec::new();
+    let entries = std::fs::read_dir(&templates_dir).map_err(|e| e.to_string())?;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let relative = path
+                .strip_prefix(&templates_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            templates.push(TemplateInfo {
+                name,
+                path: relative,
+            });
+        }
+    }
+
+    Ok(templates)
+}
+
+#[tauri::command]
+fn get_template(state: State<AppState>, name: String) -> Result<String, String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let template_path = storage.notes_dir_path().join("templates").join(format!("{name}.md"));
+    std::fs::read_to_string(&template_path).map_err(|e| {
+        format!("Failed to read template '{}': {}", name, e)
+    })
+}
+
+#[tauri::command]
+fn create_template(state: State<AppState>, name: String, content: String) -> Result<(), String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let templates_dir = storage.notes_dir_path().join("templates");
+    std::fs::create_dir_all(&templates_dir).map_err(|e| e.to_string())?;
+
+    let template_path = templates_dir.join(format!("{name}.md"));
+    std::fs::write(&template_path, &content).map_err(|e| {
+        format!("Failed to write template '{}': {}", name, e)
+    })
+}
+
+#[tauri::command]
+fn delete_template(state: State<AppState>, name: String) -> Result<(), String> {
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let template_path = storage.notes_dir_path().join("templates").join(format!("{name}.md"));
+    std::fs::remove_file(&template_path).map_err(|e| {
+        format!("Failed to delete template '{}': {}", name, e)
+    })
+}
+
+#[tauri::command]
+fn create_note_from_template(
+    state: State<AppState>,
+    title: String,
+    template_name: String,
+    folder: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Note, String> {
+    let (content, notes_dir) = {
+        let guard = state.storage.lock().map_err(|e| e.to_string())?;
+        let storage = guard.as_ref().ok_or("No vault open")?;
+
+        let template_path = storage.notes_dir_path()
+            .join("templates")
+            .join(format!("{template_name}.md"));
+        let raw = std::fs::read_to_string(&template_path).map_err(|e| {
+            format!("Failed to read template '{}': {}", template_name, e)
+        })?;
+        (raw, storage.notes_dir_path().to_path_buf())
+    }; // guard dropped here
+
+    let now = chrono::Local::now();
+    let date_str = now.format("%Y-%m-%d").to_string();
+    let time_str = now.format("%H:%M").to_string();
+
+    let content = content
+        .replace("{{title}}", &title)
+        .replace("{{date}}", &date_str)
+        .replace("{{time}}", &time_str);
+
+    let mut guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_mut().ok_or("No vault open")?;
+
+    // Temporarily we need to ensure we can use storage — but notes_dir was read above.
+    // The storage lock was released and re-acquired; the content is ready.
+    drop(notes_dir);
+    storage
+        .create_note(&title, &content, folder.as_deref(), tags)
+        .map_err(|e| e.to_string())
+}
+
 // ── Entry Point ────────────────────────────────────────────────
 
 // ── Image / Attachment Commands ────────────────────────────────
@@ -670,6 +795,38 @@ fn import_documents(state: State<AppState>, file_paths: Vec<String>, folder: Opt
     Ok(results)
 }
 
+// ── Transclusion Resolution ──────────────────────────────────
+
+#[tauri::command]
+fn resolve_transclusions(state: State<AppState>, content: String) -> Result<String, String> {
+    use cerebro::parser::wikilinks::extract_transclusions;
+
+    let transclusions = extract_transclusions(&content);
+    if transclusions.is_empty() {
+        return Ok(content);
+    }
+
+    let guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_ref().ok_or("No vault open")?;
+
+    let mut result = content;
+    for tc in transclusions {
+        // Try to find the note by title
+        if let Ok(nc) = storage.read_note(&tc.target) {
+            let replacement = nc.body.clone();
+            // Handle with heading: ![[Target#Heading]]
+            if let Some(ref heading) = tc.heading {
+                let full_ref = format!("![[{}#{}]]", tc.target, heading);
+                result = result.replace(&full_ref, &replacement);
+            }
+            // Handle plain: ![[Target]]
+            let plain_ref = format!("![[{}]]", tc.target);
+            result = result.replace(&plain_ref, &replacement);
+        }
+    }
+    Ok(result)
+}
+
 // ── Text Attachment Commands ──────────────────────────────────
 
 #[tauri::command]
@@ -681,6 +838,126 @@ fn read_attachment_text(state: State<AppState>, path: String) -> Result<String, 
         format!("Failed to read {}: {}", file_path.display(), e)
     })?;
     Ok(content)
+}
+
+// ── File Watcher Commands ──────────────────────────────────────
+
+/// Global debounce state: stores the timestamp (ms) of the last emitted event.
+static LAST_EMIT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Payload emitted to the frontend via the `vault-changed` event.
+#[derive(Debug, Clone, Serialize)]
+struct VaultChangeEvent {
+    kind: String,
+    path: String,
+}
+
+#[tauri::command]
+fn start_watcher(app: AppHandle, state: State<'_, AppState>, notes_dir: String) -> Result<(), String> {
+    let watch_path = PathBuf::from(&notes_dir);
+
+    if !watch_path.exists() {
+        return Err(format!("Notes directory does not exist: {}", notes_dir));
+    }
+
+    let app_handle = app.clone();
+    let watch_path_clone = watch_path.clone();
+
+    // Build the watcher with a callback that emits Tauri events.
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            let event = match res {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!("File watcher error: {err:?}");
+                    return;
+                }
+            };
+
+            // Determine the kind string from the event.
+            let kind_str = match event.kind {
+                EventKind::Create(_) => "create",
+                EventKind::Modify(_) => "update",
+                EventKind::Remove(_) => "remove",
+                _ => return, // ignore access/other events
+            };
+
+            // Process each affected path.
+            for path in &event.paths {
+                // Only care about .md files.
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+
+                // Skip hidden files / directories (components starting with '.').
+                if path.components().any(|c| {
+                    c.as_os_str()
+                        .to_str()
+                        .is_some_and(|s| s.starts_with('.') && s != ".")
+                }) {
+                    continue;
+                }
+
+                // Skip directories.
+                if path.is_dir() {
+                    continue;
+                }
+
+                // Compute relative path from the notes directory root.
+                let relative = path
+                    .strip_prefix(&watch_path_clone)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+
+                // Debounce: ignore events within 100ms of the last emit.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let last = LAST_EMIT_MS.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last) < 100 {
+                    continue;
+                }
+                LAST_EMIT_MS.store(now_ms, Ordering::Relaxed);
+
+                let payload = VaultChangeEvent {
+                    kind: kind_str.to_string(),
+                    path: relative,
+                };
+
+                if let Err(e) = app_handle.emit("vault-changed", &payload) {
+                    tracing::warn!("Failed to emit vault-changed event: {e}");
+                }
+            }
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|e| format!("Failed to create file watcher: {e}"))?;
+
+    // Start watching recursively.
+    watcher
+        .watch(&watch_path, RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to start watching {notes_dir}: {e}"))?;
+
+    tracing::info!("File watcher started for: {notes_dir}");
+
+    // Store the watcher in AppState (replaces any previous one).
+    let mut guard = state.watcher.lock().map_err(|e| e.to_string())?;
+    *guard = Some(watcher);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.watcher.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        tracing::info!("File watcher stopped");
+    }
+    *guard = None;
+    Ok(())
 }
 
 // ── Entry Point ────────────────────────────────────────────────
@@ -702,6 +979,7 @@ pub fn run() {
             config: Mutex::new(config),
             storage: Mutex::new(None),
             profile_config: Mutex::new(None),
+            watcher: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             home_dir,
@@ -734,6 +1012,14 @@ pub fn run() {
             read_attachment_text,
             import_document,
             import_documents,
+            start_watcher,
+            stop_watcher,
+            list_templates,
+            get_template,
+            create_template,
+            delete_template,
+            create_note_from_template,
+            resolve_transclusions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cerebro");

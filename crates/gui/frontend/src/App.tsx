@@ -52,10 +52,12 @@ interface ProfileInfo {
 
 type ViewMode = "edit" | "preview" | "split";
 
-// ── Simple Markdown Preview ────────────────────────────────────
+// ── Markdown Preview with Mermaid, Transclusion, Wikilinks ────────
 
-function MarkdownPreview({ content }: { content: string }) {
+function MarkdownPreview({ content, onNavigate }: { content: string; onNavigate?: (path: string) => void }) {
   const [html, setHtml] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mermaidRendered = useRef(false);
 
   useEffect(() => {
     const loadMarkdown = async () => {
@@ -71,6 +73,7 @@ function MarkdownPreview({ content }: { content: string }) {
         // Store vault image paths for async loading after initial parse
         const vaultImagePaths: string[] = [];
         const vaultExcalidrawPaths: string[] = [];
+        const mermaidBlocks: { id: string; code: string }[] = [];
 
         const originalImage = renderer.image.bind(renderer);
         renderer.image = function(token: any) {
@@ -86,10 +89,18 @@ function MarkdownPreview({ content }: { content: string }) {
           return originalImage.call(renderer, token);
         };
 
-        // Syntax highlighting for fenced code blocks
+        // Syntax highlighting for fenced code blocks + Mermaid support
         renderer.code = function(token: any) {
           const code = token.text || "";
           const lang = token.lang || "";
+
+          // Mermaid diagram: render placeholder, fill in post-process
+          if (lang === "mermaid" || lang === "mermaid-example") {
+            const id = `mermaid-${mermaidBlocks.length}-${Date.now()}`;
+            mermaidBlocks.push({ id, code });
+            return `<div class="mermaid-wrapper" data-mermaid-id="${id}"><pre class="mermaid-src">${code
+              .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre></div>`;
+          }
 
           let highlighted: string;
           if (hljs) {
@@ -113,7 +124,23 @@ function MarkdownPreview({ content }: { content: string }) {
           return `<div class="code-block-wrapper">${langLabel}<pre><code class="hljs language-${lang}">${highlighted}</code></pre></div>`;
         };
 
-        const result = await marked.parse(content, { async: false, renderer } as any) as unknown as string;
+        // Resolve transclusions ![[Note]] before rendering
+        let resolvedContent = content;
+        try {
+          resolvedContent = await invoke<string>("resolve_transclusions", { content });
+        } catch {
+          // fallback: resolve transclusions client-side
+          const transclusionRe = /!\[\[([^\]]+)\]\]/g;
+          resolvedContent = content; // leave as-is if backend fails
+        }
+
+        // Convert wikilinks [[Target]] to clickable links (not transclusions)
+        resolvedContent = resolvedContent.replace(/\[\[([^\]!|]+?)(\|([^\]]+?))?\]\]/g, (_match, target: string, _pipe: string, alias?: string) => {
+          const display = alias || target;
+          return `<a href="#" class="wikilink" data-target="${target.trim()}">${display.trim()}</a>`;
+        });
+
+        const result = await marked.parse(resolvedContent, { async: false, renderer } as any) as unknown as string;
 
         // Post-process: load vault images as base64
         let processed = result;
@@ -151,7 +178,53 @@ function MarkdownPreview({ content }: { content: string }) {
           }
         }
 
+        // Post-process: render Mermaid diagrams
+        if (mermaidBlocks.length > 0) {
+          try {
+            const mermaid = (await import("mermaid")).default;
+            mermaid.initialize({
+              startOnLoad: false,
+              theme: "dark",
+              themeVariables: {
+                primaryColor: '#6366f1',
+                primaryTextColor: '#e0e7ff',
+                primaryBorderColor: '#4f46e5',
+                lineColor: '#8888a0',
+                secondaryColor: '#1a1a25',
+                tertiaryColor: '#12121a',
+                background: '#0a0a0f',
+                mainBkg: '#1a1a25',
+                nodeBorder: '#6366f1',
+                clusterBkg: '#12121a',
+                titleColor: '#d4d4d8',
+                edgeLabelBackground: '#1e1e2e',
+              },
+              fontFamily: '"Inter", "Segoe UI", system-ui, sans-serif',
+              fontSize: 13,
+            });
+            for (const block of mermaidBlocks) {
+              try {
+                const { svg } = await mermaid.render(block.id, block.code);
+                processed = processed.replace(
+                  `<div class="mermaid-wrapper" data-mermaid-id="${block.id}"><pre class="mermaid-src">${block.code
+                    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre></div>`,
+                  `<div class="mermaid-wrapper">${svg}</div>`
+                );
+              } catch (e: any) {
+                console.error("Mermaid render error:", e?.message || e);
+                processed = processed.replace(
+                  `<div class="mermaid-wrapper" data-mermaid-id="${block.id}">`,
+                  `<div class="mermaid-error" style="padding:12px;color:#fca5a5;font-size:13px;border:1px solid #ef444430;border-radius:8px;margin:8px 0;"><strong>Mermaid Error</strong><pre style="margin-top:6px;color:#8888a0;font-size:12px;">${block.code.replace(/</g, "&lt;")}</pre></div><!-- `
+                );
+              }
+            }
+          } catch (e) {
+            console.error("Failed to load mermaid:", e);
+          }
+        }
+
         setHtml(processed);
+        mermaidRendered.current = true;
       } catch {
         setHtml(`<pre>${content}</pre>`);
       }
@@ -161,8 +234,28 @@ function MarkdownPreview({ content }: { content: string }) {
     });
   }, [content]);
 
+  // Handle wikilink clicks via event delegation
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !onNavigate) return;
+
+    const handler = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest("a.wikilink");
+      if (target) {
+        e.preventDefault();
+        const noteTarget = (target as HTMLElement).dataset.target;
+        if (noteTarget) {
+          onNavigate(noteTarget);
+        }
+      }
+    };
+    container.addEventListener("click", handler);
+    return () => container.removeEventListener("click", handler);
+  }, [onNavigate]);
+
   return (
     <div
+      ref={containerRef}
       className="markdown-preview p-6 overflow-auto h-full"
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -352,6 +445,7 @@ export default function App() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [backlinks, setBacklinks] = useState<any[]>([]);
+  const [forwardLinks, setForwardLinks] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
@@ -364,6 +458,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [editorSearchQuery, setEditorSearchQuery] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [noteTitles, setNoteTitles] = useState<string[]>([]);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -394,6 +489,19 @@ export default function App() {
 
       const ap = profilesList.find((p) => p.is_active) || profilesList[0] || null;
       setActiveProfile(ap);
+
+      // Cache note titles for wikilink autocomplete
+      setNoteTitles(notesList.map((n: Note) => n.title));
+
+      // Start file watcher for external changes
+      try {
+        const notesDir = ap?.notes_dir || '';
+        if (notesDir) {
+          await invoke("start_watcher", { notesDir });
+        }
+      } catch (e) {
+        console.warn("File watcher not started:", e);
+      }
 
       // Persist last opened vault for auto-loading on next startup
       try {
@@ -466,11 +574,70 @@ export default function App() {
 
         const ap = profilesList.find((p) => p.is_active) || profilesList[0] || null;
         setActiveProfile(ap);
+
+        // Cache note titles for wikilink autocomplete
+        setNoteTitles(notesList.map((n: Note) => n.title));
+
+        // Start file watcher
+        try {
+          const notesDir = ap?.notes_dir || '';
+          if (notesDir) {
+            await invoke("start_watcher", { notesDir });
+          }
+        } catch (e) {
+          console.warn("File watcher not started:", e);
+        }
       } catch {
         setVaultOpen(false);
       }
     })();
   }, []);
+
+  // ── File watcher: listen for vault-changed events ────────────
+  useEffect(() => {
+    if (!vaultOpen) return;
+
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<{ kind: string; path: string }>("vault-changed", async (event) => {
+          const { kind, path: changedPath } = event.payload;
+          console.log(`Vault changed: ${kind} ${changedPath}`);
+
+          // Reload notes list
+          try {
+            const [notesList, tagsList] = await Promise.all([
+              invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+              invoke<TagInfo[]>("list_tags"),
+            ]);
+            setNotes(notesList);
+            setTags(tagsList);
+            setNoteTitles(notesList.map((n: Note) => n.title));
+
+            // If the currently active note was updated, reload it
+            if (activeNote && kind === "update") {
+              const normChanged = changedPath.replace(/^\/+/, "");
+              const normActive = activeNote.path.replace(/^\/+/, "");
+              if (normChanged === normActive || normChanged.endsWith(normActive) || normActive.endsWith(normChanged)) {
+                const nc = await invoke<NoteContent>("get_note", { identifier: activeNote.path });
+                setNoteContent(nc.body);
+                setWordCount(nc.body.split(/\s+/).filter(Boolean).length);
+              }
+            }
+          } catch (e) {
+            console.error("Failed to reload after vault change:", e);
+          }
+        });
+      } catch (e) {
+        console.error("Failed to listen for vault-changed:", e);
+      }
+    })();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [vaultOpen, activeNote]);
 
   // ── Note operations ────────────────────────────────────────
 
@@ -486,6 +653,16 @@ export default function App() {
       // Load backlinks
       const bl = await invoke<any[]>("get_backlinks", { identifier: note.path });
       setBacklinks(bl);
+
+      // Extract outgoing wikilinks from content for the "Outgoing Links" panel
+      const wikilinkRe = /\[\[([^\]!|]+?)(\|[^\]]+?)?\]\]/g;
+      const outgoing: string[] = [];
+      let m;
+      while ((m = wikilinkRe.exec(nc.body)) !== null) {
+        const target = m[1].trim();
+        if (!outgoing.includes(target)) outgoing.push(target);
+      }
+      setForwardLinks(outgoing);
     } catch (e) {
       console.error("Failed to load note:", e);
     }
@@ -734,7 +911,13 @@ export default function App() {
       }
       if (mod && e.key === "e") {
         e.preventDefault();
-        setViewMode((v) => v === "edit" ? "split" : "edit");
+        // Cycle: edit → split → preview → edit
+        setViewMode((v) => v === "edit" ? "split" : v === "split" ? "preview" : "edit");
+      }
+      // Ctrl+P — toggle preview (edit ↔ preview, keeping split if already in split)
+      if (mod && e.key === "p") {
+        e.preventDefault();
+        setViewMode((v) => v === "preview" ? "edit" : "preview");
       }
       if (mod && e.key === "g") {
         e.preventDefault();
@@ -892,12 +1075,14 @@ export default function App() {
                     onSave={saveNote}
                     searchQuery={editorSearchQuery}
                     onSearchQueryCleared={() => setEditorSearchQuery("")}
+                    noteTitles={noteTitles}
+                    onNavigateNote={(path) => handleSearchSelect(path, "")}
                   />
                 </div>
               )}
               {(viewMode === "preview" || viewMode === "split") && (
                 <div className="flex-1 overflow-hidden bg-[#0a0a0f]">
-                  <MarkdownPreview content={noteContent} />
+                  <MarkdownPreview content={noteContent} onNavigate={(path) => handleSearchSelect(path, "")} />
                 </div>
               )}
             </>
@@ -906,12 +1091,12 @@ export default function App() {
               <div className="text-center">
                 <div className="text-4xl mb-4">📝</div>
                 <p className="text-lg">Select a note or create a new one</p>
-                <p className="text-sm mt-2">Ctrl+N to create · Ctrl+K to search</p>
+                <p className="text-sm mt-2">Ctrl+N to create · Ctrl+K to search · Ctrl+E to cycle views</p>
               </div>
             </div>
           )}
 
-          {/* Right panel — Backlinks */}
+          {/* Right panel — Backlinks & Outgoing Links */}
           {rightPanelOpen && (
             <div className="w-72 border-l border-[#2a2a3a] bg-[#12121a] overflow-auto shrink-0 animate-fade-in">
               <div className="p-4">
@@ -930,6 +1115,23 @@ export default function App() {
                         {bl.context && (
                           <p className="text-xs text-[#8888a0] mt-1 line-clamp-2">{bl.context}</p>
                         )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <h3 className="text-sm font-semibold text-white mt-6 mb-3">Outgoing Links</h3>
+                {forwardLinks.length === 0 ? (
+                  <p className="text-xs text-[#8888a0]">No outgoing links</p>
+                ) : (
+                  <div className="space-y-1">
+                    {forwardLinks.map((target, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handleSearchSelect(target, "")}
+                        className="w-full text-left px-2 py-1.5 rounded-lg text-sm text-[#a5b4fc] hover:bg-[#1a1a25] transition-colors truncate block"
+                      >
+                        → {target}
                       </button>
                     ))}
                   </div>
