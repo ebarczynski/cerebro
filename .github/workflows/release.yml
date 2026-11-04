@@ -51,8 +51,11 @@ jobs:
           sha256sum "cerebro-${VERSION}-linux-x86_64.tar.gz" > "cerebro-${VERSION}-linux-x86_64.tar.gz.sha256"
 
       - name: Build GUI bundle (deb)
-        working-directory: crates/gui/frontend
-        run: npx tauri build --bundles deb
+        # tauri-cli v2 discovers the project from CWD + SUBFOLDERS only —
+        # from frontend/ it panics (no conf below it). Run from crates/gui
+        # with the frontend's local bin; beforeBuildCommand handles npm.
+        working-directory: crates/gui
+        run: frontend/node_modules/.bin/tauri build --bundles deb
 
       - name: Stage artifacts
         run: |
@@ -99,8 +102,9 @@ jobs:
           shasum -a 256 "cerebro-${VERSION}-macos-aarch64.tar.gz" > "cerebro-${VERSION}-macos-aarch64.tar.gz.sha256"
 
       - name: Build GUI bundle (app + dmg, arm64)
-        working-directory: crates/gui/frontend
-        run: npx tauri build --bundles app,dmg
+        # Same as Linux: discover from crates/gui, use frontend's local bin
+        working-directory: crates/gui
+        run: frontend/node_modules/.bin/tauri build --bundles app,dmg
 
       - name: Stage artifacts
         run: |
@@ -146,7 +150,7 @@ jobs:
           - \`cerebro-${VERSION}-macos-aarch64.tar.gz\` — CLI binary
 
           **Linux (x86_64)**
-          - \`cerebro_${VERSION}_amd64.deb\` — Debian/Ubuntu package
+          - \`Cerebro_${VERSION}_amd64.deb\` — Debian/Ubuntu package
           - \`cerebro-${VERSION}-linux-x86_64.tar.gz\` — CLI binary
 
           All artifacts have \`.sha256\` checksums alongside them.
