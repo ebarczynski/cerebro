@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
-import StatusBar, { KindBadge, formatRelativeTime } from "./components/StatusBar";
+import StatusBar, { KindBadge, formatRelativeTime, VAULT_KIND_META } from "./components/StatusBar";
 import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
 
 // ── Types ──────────────────────────────────────────────────────
@@ -479,6 +479,337 @@ function WelcomeScreen({
   );
 }
 
+// ── Modal: Create Vault ────────────────────────────────────────
+// Native prompt()/confirm() are NOT implemented in Tauri's WKWebView on
+// macOS (silently return null) — always use in-app modals instead.
+
+function CreateVaultModal({
+  onCreate,
+  onClose,
+}: {
+  onCreate: (name: string, kind: VaultKindTag) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<VaultKindTag>("private");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Vault dir name: no path separators, no leading dot/dash
+  const nameValid = /^[A-Za-z0-9][A-Za-z0-9 _.-]*$/.test(name.trim());
+
+  const submit = async () => {
+    if (!nameValid || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate(name.trim(), kind);
+      // Parent closes the modal on success
+    } catch (e) {
+      setError(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
+      <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[420px] p-6 shadow-2xl">
+        <h2 className="text-lg font-semibold text-white mb-1">Create New Vault</h2>
+        <p className="text-xs text-[#8888a0] mb-4" style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+          ~/.cerebro/profiles/&lt;name&gt;
+        </p>
+
+        <label className="block text-xs font-semibold uppercase tracking-wider text-[#8888a0] mb-1.5">
+          Name
+        </label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder="my-vault"
+          className="w-full px-3 py-2 bg-[#0a0a0f] border border-[#2a2a3a] rounded-lg text-sm text-white placeholder-[#55556a] focus:outline-none focus:border-[#6366f1]"
+        />
+
+        <label className="block text-xs font-semibold uppercase tracking-wider text-[#8888a0] mb-1.5 mt-4">
+          Type
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {(["private", "business"] as VaultKindTag[]).map((k) => {
+            const meta = VAULT_KIND_META[k];
+            const selected = kind === k;
+            return (
+              <button
+                key={k}
+                onClick={() => setKind(k)}
+                className="flex items-center justify-center gap-2 py-2.5 rounded-lg border text-sm font-medium transition-colors"
+                style={
+                  selected
+                    ? { color: meta.color, backgroundColor: `${meta.color}1f`, borderColor: meta.color }
+                    : { color: "#8888a0", backgroundColor: "#1a1a25", borderColor: "#2a2a3a" }
+                }
+              >
+                <span>{meta.icon}</span> {meta.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {error && (
+          <p className="text-xs mt-3" style={{ color: "#f87171" }}>
+            {error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm rounded-lg bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a0a0b8] border border-[#333]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!nameValid || busy}
+            className="px-4 py-2 text-sm rounded-lg font-medium text-white transition-colors disabled:opacity-40"
+            style={{ backgroundColor: "#6366f1" }}
+          >
+            {busy ? "Creating…" : "Create Vault"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Modal: Open Vault ──────────────────────────────────────────
+// macOS hides ~/.cerebro in the native file picker (dot-directory), so list
+// vaults in-app first; the OS dialog is only the fallback, pre-navigated to
+// the profiles dir via defaultPath.
+
+function OpenVaultModal({
+  recentVaults,
+  onOpenEntry,
+  onClose,
+}: {
+  recentVaults: RecentVault[];
+  onOpenEntry: (entry: { profile: string; path?: string }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [home, setHome] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<ProfileInfo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setHome(await homeDir());
+      } catch {}
+      try {
+        setProfiles(await invoke<ProfileInfo[]>("list_profiles"));
+      } catch {
+        setProfiles([]);
+      }
+    })();
+  }, []);
+
+  const openEntry = async (profile: string, path?: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onOpenEntry({ profile, path });
+    } catch (e) {
+      setError(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const browse = async () => {
+    setError(null);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Vault Directory",
+        defaultPath: home ? `${home}/.cerebro/profiles` : undefined,
+      });
+      if (!selected) return;
+      const p = typeof selected === "string" ? selected : (selected as string);
+      const profileName = p.split("/").pop() || "personal";
+      await openEntry(profileName, p);
+    } catch (e) {
+      setError(String(e).replace(/^Error:\s*/, ""));
+    }
+  };
+
+  const recentPaths = new Set(recentVaults.map((v) => v.path));
+  const profileRows = (profiles ?? []).filter(
+    (p) => !home || !recentPaths.has(`${home}/.cerebro/profiles/${p.name}`)
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
+      <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[540px] max-h-[72vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a3a]">
+          <h2 className="text-lg font-semibold text-white">Open Vault</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">
+            &times;
+          </button>
+        </div>
+
+        <div className="overflow-auto px-5 py-4 flex-1">
+          {recentVaults.length > 0 && (
+            <>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8888a0] mb-2">
+                Recent
+              </p>
+              <div className="space-y-1.5 mb-4">
+                {recentVaults.map((v) => (
+                  <button
+                    key={v.path}
+                    disabled={busy}
+                    onClick={() => openEntry(v.profile, v.path)}
+                    className="w-full flex items-center gap-2 p-2.5 rounded-lg bg-[#1a1a25] hover:bg-[#2a2a3a] border border-[#2a2a3a] transition-colors text-left disabled:opacity-50"
+                  >
+                    <KindBadge kind={v.kind} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-white truncate">{v.name}</p>
+                      <p
+                        className="truncate text-[10px] text-[#8888a0]"
+                        style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                        title={v.path}
+                      >
+                        {v.path}
+                      </p>
+                    </div>
+                    <span className="text-[9px] text-[#71717a] flex-shrink-0">
+                      {formatRelativeTime(v.lastOpenedAt)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {profiles === null ? (
+            <p className="text-xs text-[#8888a0]">Loading profiles…</p>
+          ) : (
+            profileRows.length > 0 && (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8888a0] mb-2">
+                  Profiles on this machine
+                </p>
+                <div className="space-y-1.5">
+                  {profileRows.map((p) => (
+                    <button
+                      key={p.name}
+                      disabled={busy}
+                      onClick={() => openEntry(p.name)}
+                      className="w-full flex items-center gap-2 p-2.5 rounded-lg bg-[#1a1a25] hover:bg-[#2a2a3a] border border-[#2a2a3a] transition-colors text-left disabled:opacity-50"
+                    >
+                      <KindBadge kind={p.kind === "business" ? "business" : "private"} size="sm" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-white truncate">{p.display_name}</p>
+                        <p
+                          className="truncate text-[10px] text-[#8888a0]"
+                          style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                        >
+                          ~/.cerebro/profiles/{p.name}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )
+          )}
+
+          {recentVaults.length === 0 && (profiles?.length ?? 0) === 0 && (
+            <p className="text-xs text-[#8888a0] py-4 text-center">
+              No vaults found yet — create one or browse.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-xs mt-3" style={{ color: "#f87171" }}>
+              {error}
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between px-5 py-4 border-t border-[#2a2a3a]">
+          <button
+            onClick={browse}
+            disabled={busy}
+            className="px-3 py-2 text-sm rounded-lg bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a5b4fc] border border-[#333] disabled:opacity-50"
+          >
+            📂 Browse on disk…
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm rounded-lg bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a0a0b8] border border-[#333]"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Modal: Confirm ─────────────────────────────────────────────
+
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[360px] p-5 shadow-2xl">
+        <h2 className="text-base font-semibold text-white mb-2">{title}</h2>
+        <p className="text-sm text-[#a0a0b8] mb-5">{message}</p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm rounded-lg bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a0a0b8] border border-[#333]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm rounded-lg font-medium text-white"
+            style={{ backgroundColor: "#dc2626" }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────
 
 const RECENT_VAULTS_KEY = 'cerebro-recent-vaults';
@@ -558,8 +889,12 @@ export default function App() {
   const [graphOpen, setGraphOpen] = useState(false);
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultPath, setVaultPath] = useState<string | null>(null);
+  const [vaultName, setVaultName] = useState<string | null>(null);
   const [vaultKind, setVaultKind] = useState<VaultKindTag>("private");
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => loadRecentVaults());
+  const [createVaultOpen, setCreateVaultOpen] = useState(false);
+  const [openVaultOpen, setOpenVaultOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Note | null>(null);
   const [wordCount, setWordCount] = useState(0);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
@@ -585,6 +920,7 @@ export default function App() {
 
       setVaultOpen(true);
       setVaultPath(info.path);
+      setVaultName(info.name || profile);
       setVaultKind(normalizeKind(info.kind));
 
       const [notesList, tagsList, profilesList] = await Promise.all([
@@ -628,34 +964,34 @@ export default function App() {
     }
   }, []);
 
-  const handleOpenVault = useCallback(async () => {
-    try {
-      const selected = await open({ directory: true, multiple: false, title: "Select Vault Directory" });
-      if (!selected) return;
-      const vaultPath = typeof selected === 'string' ? selected : selected as string;
-      const profileName = vaultPath.split('/').pop() || 'personal';
-      await loadVault(profileName, vaultPath);
-    } catch (e) {
-      console.error("Failed to open vault:", e);
-    }
+  /** Open Vault — shows the in-app picker (macOS hides ~/.cerebro in the
+   *  native file dialog; see OpenVaultModal). */
+  const handleOpenVault = useCallback(() => {
+    setOpenVaultOpen(true);
+  }, []);
+
+  const handleShowCreateVault = useCallback(() => {
+    setCreateVaultOpen(true);
+  }, []);
+
+  /** Called by CreateVaultModal — throws propagate back into the modal. */
+  const handleCreateVault = useCallback(async (name: string, kind: VaultKindTag) => {
+    const home = await homeDir();
+    const vaultPath = `${home}.cerebro/profiles/${name}`;
+    await invoke('create_vault', { name, path: vaultPath, kind });
+    setCreateVaultOpen(false);
+    await loadVault(name, vaultPath);
+    setToastMessage(`Created ${kind === 'business' ? '💼 business' : '🔒 private'} vault "${name}"`);
+    setTimeout(() => setToastMessage(null), 3000);
   }, [loadVault]);
 
-  const handleCreateVault = useCallback(async () => {
-    try {
-      const name = prompt('Enter vault name:', 'my-vault');
-      if (!name) return;
-      const isBusiness = confirm(
-        'Is this a BUSINESS (corporate/work) vault?\n\nOK = Business · Cancel = Private'
-      );
-      const kind: VaultKindTag = isBusiness ? 'business' : 'private';
-      const home = await homeDir();
-      const vaultPath = `${home}.cerebro/profiles/${name}`;
-      await invoke('create_vault', { name, path: vaultPath, kind });
-      await loadVault(name, vaultPath);
-      setToastMessage(`Created ${kind === 'business' ? '💼 business' : '🔒 private'} vault "${name}"`);
-      setTimeout(() => setToastMessage(null), 3000);
-    } catch (e) {
-      console.error("Failed to create vault:", e);
+  /** Called by OpenVaultModal — throws keep the modal open with the error. */
+  const handleOpenVaultEntry = useCallback(async (entry: { profile: string; path?: string }) => {
+    const ok = await loadVault(entry.profile, entry.path);
+    if (ok) {
+      setOpenVaultOpen(false);
+    } else {
+      throw new Error(`Could not open vault${entry.path ? ` at ${entry.path}` : ` "${entry.profile}"`}`);
     }
   }, [loadVault]);
 
@@ -816,9 +1152,16 @@ export default function App() {
     }
   }, [activeNote, noteContent]);
 
-  const deleteNote = useCallback(async (note: Note) => {
-    const confirmed = window.confirm(`Delete "${note.title}"? This cannot be undone.`);
-    if (!confirmed) return;
+  /** Delete request — shows the in-app confirm dialog (window.confirm is a
+   *  no-op in Tauri's WKWebView on macOS). */
+  const deleteNote = useCallback((note: Note) => {
+    setDeleteTarget(note);
+  }, []);
+
+  const confirmDeleteNote = useCallback(async () => {
+    const note = deleteTarget;
+    if (!note) return;
+    setDeleteTarget(null);
 
     try {
       await invoke("delete_note", { identifier: note.path });
@@ -830,7 +1173,7 @@ export default function App() {
     } catch (e) {
       console.error("Failed to delete note:", e);
     }
-  }, [activeNote]);
+  }, [deleteTarget, activeNote]);
 
   // Debounced save
   const handleContentChange = useCallback((value: string) => {
@@ -1050,6 +1393,9 @@ export default function App() {
         setSearchOpen(false);
         setGraphOpen(false);
         setRightPanelOpen(false);
+        setCreateVaultOpen(false);
+        setOpenVaultOpen(false);
+        setDeleteTarget(null);
       }
     };
     window.addEventListener("keydown", handler);
@@ -1063,7 +1409,7 @@ export default function App() {
       <div className="h-screen flex flex-col">
         <WelcomeScreen
           onOpen={handleOpenVault}
-          onCreate={handleCreateVault}
+          onCreate={handleShowCreateVault}
           recentVaults={recentVaults}
           onSwitchVault={handleSwitchVault}
         />
@@ -1075,12 +1421,23 @@ export default function App() {
           activeNoteTitle={null}
           syncStatus="offline"
           vaultPath={null}
+          vaultName={null}
           vaultKind="private"
           recentVaults={recentVaults}
           onSwitchVault={handleSwitchVault}
           onOpenOther={handleOpenVault}
           onSetKind={handleSetVaultKind}
         />
+        {createVaultOpen && (
+          <CreateVaultModal onCreate={handleCreateVault} onClose={() => setCreateVaultOpen(false)} />
+        )}
+        {openVaultOpen && (
+          <OpenVaultModal
+            recentVaults={recentVaults}
+            onOpenEntry={handleOpenVaultEntry}
+            onClose={() => setOpenVaultOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -1285,6 +1642,7 @@ export default function App() {
         activeNoteTitle={activeNote?.title || null}
         syncStatus={saving ? "syncing" : "synced"}
         vaultPath={vaultPath}
+        vaultName={vaultName}
         vaultKind={vaultKind}
         recentVaults={recentVaults}
         onSwitchVault={handleSwitchVault}
@@ -1303,6 +1661,27 @@ export default function App() {
 
       {/* Graph view */}
       {graphOpen && <GraphViewPanel onClose={() => setGraphOpen(false)} />}
+
+      {/* Vault modals */}
+      {createVaultOpen && (
+        <CreateVaultModal onCreate={handleCreateVault} onClose={() => setCreateVaultOpen(false)} />
+      )}
+      {openVaultOpen && (
+        <OpenVaultModal
+          recentVaults={recentVaults}
+          onOpenEntry={handleOpenVaultEntry}
+          onClose={() => setOpenVaultOpen(false)}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete note?"
+          message={`"${deleteTarget.title}" will be permanently deleted. This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={confirmDeleteNote}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
 
       {/* Toast notifications */}
       {toastMessage && (
