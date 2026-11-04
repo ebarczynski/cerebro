@@ -207,7 +207,8 @@ fn convert_pptx(data: &[u8]) -> Result<String> {
 
     let mut md_parts: Vec<String> = Vec::new();
     for (i, slide) in slides.iter().enumerate() {
-        if let Some(slide_md) = slide.convert_to_md() {
+        // pptx-to-md 2.x returns Result<String> per slide (was Option<String> in 0.x).
+        if let Ok(slide_md) = slide.convert_to_md() {
             if !md_parts.is_empty() {
                 md_parts.push(format!("\n---\n\n## Slide {}\n", i + 1));
             }
@@ -234,7 +235,9 @@ fn convert_docx(data: &[u8]) -> Result<String> {
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        if file.name() == "word/document.xml" {
+        // zip 9.x: name() returns Result<Cow<str>> (was &str in 8.x).
+        let name = file.name().map_err(|e| anyhow::anyhow!("invalid entry name at index {}: {}", i, e))?;
+        if name == "word/document.xml" {
             use std::io::Read;
             file.read_to_string(&mut doc_xml)
                 .context("reading word/document.xml from DOCX")?;
@@ -490,7 +493,11 @@ fn convert_odt(data: &[u8]) -> Result<String> {
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        // zip 9.x: name() returns Result<Cow<str>> (was &str in 8.x).
+        let name = file
+            .name()
+            .map_err(|e| anyhow::anyhow!("invalid entry name at index {}: {}", i, e))?
+            .to_string();
         if name == "content.xml" {
             use std::io::Read;
             file.read_to_string(&mut content_xml)

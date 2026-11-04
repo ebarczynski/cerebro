@@ -1,6 +1,6 @@
 [package]
 name = "cerebro"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.96.0"
 description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
@@ -27,9 +27,6 @@ tokio = { version = "1", features = ["full"] }
 
 # Database
 rusqlite = { version = "0.34", features = ["bundled", "functions", "column_decltype"] }
-
-# Search
-tantivy = "0.22"
 
 # Markdown
 pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }
@@ -66,12 +63,12 @@ open = "5"
 regex = "1"
 
 # Document import
-pdf-extract = "0.10"
-calamine = "0.35"
+pdf-extract = "0.12"
+calamine = "0.38"
 scraper = "0.27"
-pptx-to-md = "0.4"
+pptx-to-md = "2.0"
 tempfile = "3"
-zip = "8.6.0"
+zip = "9"
 
 [dev-dependencies]
 assert_cmd = "2"
