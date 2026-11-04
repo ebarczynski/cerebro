@@ -24,5 +24,5 @@ pub mod profile;
 pub use app::{Config, ConfluenceConfig, KnowledgePalaceConfig};
 pub use error::{ConfigError, Result};
 pub use profile::{
-    ConfluenceSection, KnowledgePalaceSection, ProfileConfig, SyncMethod, SyncSection,
+    ConfluenceSection, KnowledgePalaceSection, ProfileConfig, SyncMethod, SyncSection, VaultKind,
 };

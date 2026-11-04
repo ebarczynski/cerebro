@@ -1,6 +1,6 @@
 [package]
 name = "cerebro-gui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.96.0"
 description = "Cerebro GUI — Tauri 2.0 desktop app for personal knowledge management"
