@@ -18,6 +18,7 @@ interface StatusBarProps {
   activeNoteTitle: string | null;
   syncStatus: string;
   vaultPath: string | null;
+  vaultName: string | null;
   vaultKind: VaultKindTag;
   recentVaults: RecentVault[];
   onSwitchVault: (entry: RecentVault) => void;
@@ -164,6 +165,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
   activeNoteTitle,
   syncStatus,
   vaultPath,
+  vaultName,
   vaultKind,
   recentVaults,
   onSwitchVault,
@@ -225,9 +227,18 @@ const StatusBar: React.FC<StatusBarProps> = ({
             onClick={() => setVaultMenuOpen(!vaultMenuOpen)}
             title={vaultPath || 'No vault open'}
             className="flex items-center gap-1.5 min-w-0 rounded px-1 -mx-1 hover:bg-[#1a1a25] transition-colors"
-            style={{ height: '20px', maxWidth: '45vw' }}
+            style={{ height: '20px', maxWidth: '50vw' }}
           >
             <KindBadge kind={vaultKind} size="lg" />
+            {vaultName && (
+              <span
+                className="truncate flex-shrink"
+                style={{ color: '#e4e4ef', fontWeight: 600, fontSize: '11px', maxWidth: '160px' }}
+              >
+                {vaultName}
+              </span>
+            )}
+            {vaultName && <span style={{ color: '#3f3f50' }}>·</span>}
             <span
               className="truncate min-w-0"
               style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#a1a1b5', fontSize: '10px' }}
