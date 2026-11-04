@@ -273,10 +273,23 @@ function MarkdownPreview({ content, onNavigate }: { content: string; onNavigate?
   );
 }
 
-// ── Graph View Panel ───────────────────────────────────────────
+// ── Graph View Panel (Obsidian-style) ──────────────────────────
+// Degree-scaled nodes, hover highlights the neighborhood, wheel/drag
+// zoom+pan, click opens the note. Physics tuned for a calm settle.
 
-function GraphViewPanel({ onClose }: { onClose: () => void }) {
+function GraphViewPanel({
+  onClose,
+  onNavigate,
+}: {
+  onClose: () => void;
+  onNavigate: (path: string) => void;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const zoomRef = useRef<any>(null); // d3.ZoomBehavior, for the +/- buttons
+  const navRef = useRef(onNavigate);
+  navRef.current = onNavigate;
+  const [stats, setStats] = useState<{ nodes: number; links: number } | null>(null);
+  const [empty, setEmpty] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -284,7 +297,11 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
       invoke<{ source_id: string; target_id: string; confidence: number }[]>("get_keyword_links"),
     ])
       .then(async ([data, keywordLinks]) => {
-        if (!svgRef.current || data.nodes.length === 0) return;
+        if (!svgRef.current) return;
+        if (data.nodes.length === 0) {
+          setEmpty(true);
+          return;
+        }
 
         const d3 = await import("d3");
         const svg = d3.select(svgRef.current);
@@ -298,7 +315,7 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const edges: any[] = data.edges.map((e) => ({ ...e, type: "wikilink" }));
 
-        // Add keyword-based edges (avoid exact duplicates with wikilinks)
+        // Keyword-based edges (deduped against wikilinks)
         const existingPairs = new Set(edges.map((e: any) => `${e.source}->${e.target}`));
         for (const kl of keywordLinks) {
           const fwd = `${kl.source_id}->${kl.target_id}`;
@@ -314,21 +331,56 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
           }
         }
 
-        const simulation = d3
-          .forceSimulation(nodes)
-          .force("link", d3.forceLink(edges).id((d: any) => d.id).distance(100))
-          .force("charge", d3.forceManyBody().strength(-200))
-          .force("center", d3.forceCenter(width / 2, height / 2))
-          .force("collision", d3.forceCollide().radius(30));
+        // Degree → radius (Obsidian-style: hubs grow)
+        const degree = new Map<string, number>();
+        for (const e of edges) {
+          degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+          degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+        }
+        const radius = (d: any) => 4 + Math.sqrt(degree.get(d.id) ?? 0) * 2.4;
 
-        const link = svg
+        // Neighborhood map for hover highlighting
+        const neighbors = new Map<string, Set<string>>();
+        const bump = (a: string, b: string) => {
+          if (!neighbors.has(a)) neighbors.set(a, new Set());
+          neighbors.get(a)!.add(b);
+        };
+        for (const e of edges) {
+          bump(e.source, e.target);
+          bump(e.target, e.source);
+        }
+        const linked = (a: string, b: string) => neighbors.get(a)?.has(b) ?? false;
+
+        // Zoom & pan on the whole layer
+        const g = svg.append("g");
+        const zoom = d3
+          .zoom<SVGSVGElement, unknown>()
+          .scaleExtent([0.15, 5])
+          .on("zoom", (event: any) => g.attr("transform", event.transform));
+        svg.call(zoom as any).on("dblclick.zoom", null);
+        zoomRef.current = zoom;
+
+        // Edges at the bottom
+        const link = g
           .append("g")
           .selectAll("line")
           .data(edges)
           .join("line")
-          .attr("stroke", (d: any) => d.type === "keyword" ? "#f59e0b60" : "#2a2a3a")
-          .attr("stroke-width", (d: any) => d.type === "keyword" ? 1 : 1.5)
-          .attr("stroke-dasharray", (d: any) => d.type === "keyword" ? "4 3" : "none");
+          .attr("stroke", (d: any) => (d.type === "keyword" ? "#f59e0b60" : "#34344d"))
+          .attr("stroke-width", (d: any) =>
+            d.type === "keyword" ? 0.8 + (d.confidence ?? 0.5) * 1.4 : 1.4
+          )
+          .attr("stroke-dasharray", (d: any) => (d.type === "keyword" ? "4 4" : "none"));
+
+        // Physics — gentler charge + slower decay for a calm settle
+        const simulation = d3
+          .forceSimulation(nodes)
+          .force("link", d3.forceLink(edges).id((d: any) => d.id).distance(95).strength(0.5))
+          .force("charge", d3.forceManyBody().strength(-320))
+          .force("center", d3.forceCenter(width / 2, height / 2))
+          .force("collision", d3.forceCollide().radius((d: any) => radius(d) + 6))
+          .velocityDecay(0.15)
+          .alphaDecay(0.02);
 
         const drag = d3.drag<SVGSVGElement, any>()
           .on("start", (event: any, d: any) => {
@@ -337,6 +389,9 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
             d.fy = d.y;
           })
           .on("drag", (event: any, d: any) => {
+            // d3-drag reports event.x/y via d3.pointer against the dragged
+            // node's PARENT — which sits inside the zoom-transformed <g> —
+            // so these are already graph-space coordinates. No inversion.
             d.fx = event.x;
             d.fy = event.y;
           })
@@ -346,31 +401,92 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
             d.fy = null;
           });
 
-        const node = svg
+        // Highlight helpers — Obsidian dims everything outside the neighborhood
+        const t = (sel: any) => sel.transition().duration(160);
+        const highlight = (d: any) => {
+          t(link)
+            .attr("stroke", (e: any) =>
+              e.source.id === d.id || e.target.id === d.id
+                ? e.type === "keyword"
+                  ? "#f59e0b"
+                  : "#818cf8"
+                : "#34344d"
+            )
+            .attr("stroke-opacity", (e: any) =>
+              e.source.id === d.id || e.target.id === d.id ? 0.95 : 0.08
+            );
+          t(node)
+            .attr("fill", (n: any) =>
+              n.id === d.id ? "#ffffff" : linked(n.id, d.id) ? "#818cf8" : "#6366f1"
+            )
+            .attr("stroke-opacity", (n: any) =>
+              n.id === d.id || linked(n.id, d.id) ? 0.9 : 0.15
+            )
+            .attr("opacity", (n: any) =>
+              n.id === d.id || linked(n.id, d.id) ? 1 : 0.18
+            );
+          t(label).attr("opacity", (n: any) =>
+            n.id === d.id || linked(n.id, d.id) ? 1 : 0.08
+          );
+        };
+        const clearHighlight = () => {
+          t(link)
+            .attr("stroke", (e: any) => (e.type === "keyword" ? "#f59e0b60" : "#34344d"))
+            .attr("stroke-opacity", 0.75);
+          t(node)
+            .attr("fill", "#6366f1")
+            .attr("stroke-opacity", 0.9)
+            .attr("opacity", 1);
+          t(label).attr("opacity", 0.85);
+        };
+
+        // Nodes
+        const node = g
           .append("g")
           .selectAll("circle")
           .data(nodes)
           .join("circle")
-          .attr("r", 8)
+          .attr("r", radius)
           .attr("fill", "#6366f1")
-          .attr("stroke", "#818cf8")
-          .attr("stroke-width", 1.5)
+          .attr("stroke", "#a5b4fc")
+          .attr("stroke-width", 1.2)
+          .attr("stroke-opacity", 0.9)
+          .attr("cursor", "pointer")
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .on("click", (event: any, d: any) => {
             event.stopPropagation();
-          }) as any;
-        
-        node.call(drag as any);
+            if (event.defaultPrevented) return; // was a drag, not a click
+            navRef.current(d.path);
+          })
+          .on("mouseenter", (event: any, d: any) => highlight(d))
+          .on("mouseleave", () => clearHighlight()) as any;
 
-        const label = svg
+        node.call(drag as any);
+        node.style("transition", "r 120ms ease");
+        node
+          .on("mouseenter.scale", (event: any, d: any) =>
+            d3.select(event.currentTarget).attr("r", radius(d) + 2)
+          )
+          .on("mouseleave.scale", (event: any, d: any) =>
+            d3.select(event.currentTarget).attr("r", radius(d))
+          );
+
+        // Labels on top (never block node hover)
+        const label = g
           .append("g")
+          .attr("pointer-events", "none")
           .selectAll("text")
           .data(nodes)
           .join("text")
-          .text((d: any) => d.title.length > 15 ? d.title.slice(0, 15) + "…" : d.title)
+          .text((d: any) => (d.title.length > 22 ? d.title.slice(0, 22) + "…" : d.title))
           .attr("font-size", 10)
-          .attr("fill", "#8888a0")
+          .attr("fill", "#a5a5c0")
           .attr("text-anchor", "middle")
-          .attr("dy", -14);
+          .attr("opacity", 0.85)
+          .attr("paint-order", "stroke")
+          .attr("stroke", "#0a0a0f")
+          .attr("stroke-width", 2.5)
+          .attr("stroke-linejoin", "round");
 
         simulation.on("tick", () => {
           link
@@ -379,28 +495,89 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
             .attr("x2", (d: any) => d.target.x)
             .attr("y2", (d: any) => d.target.y);
           node.attr("cx", (d: any) => d.x).attr("cy", (d: any) => d.y);
-          label.attr("x", (d: any) => d.x).attr("y", (d: any) => d.y);
+          label.attr("x", (d: any) => d.x).attr("y", (d: any) => d.y + radius(d) + 11);
         });
+
+        setStats({ nodes: nodes.length, links: edges.length });
       })
       .catch(console.error);
   }, []);
 
+  const zoomBy = (factor: number) => {
+    if (!svgRef.current || !zoomRef.current) return;
+    import("d3").then((d3) => {
+      d3.select(svgRef.current)
+        .transition()
+        .duration(200)
+        .call((zoomRef.current as any).scaleBy, factor);
+    });
+  };
+
+  const resetZoom = () => {
+    if (!svgRef.current || !zoomRef.current) return;
+    import("d3").then((d3) => {
+      d3.select(svgRef.current)
+        .transition()
+        .duration(250)
+        .call((zoomRef.current as any).transform, d3.zoomIdentity);
+    });
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-[#12121a] rounded-xl border border-[#2a2a3a] w-[80vw] h-[70vh] flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-[#2a2a3a]">
-          <h2 className="text-lg font-semibold text-white">Knowledge Graph</h2>
+      <div className="bg-[#0d0d15] rounded-xl border border-[#2a2a3a] w-[86vw] h-[80vh] flex flex-col shadow-2xl animate-fade-in overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a3a]">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-white">Knowledge Graph</h2>
+            {stats && (
+              <span className="text-xs text-[#8888a0]">
+                {stats.nodes} notes · {stats.links} links
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-4 text-xs text-[#8888a0]">
             <span className="flex items-center gap-1">
-              <span className="inline-block w-6 h-0.5 bg-[#2a2a3a]" /> Wikilinks
+              <span className="inline-block w-6 h-0.5 bg-[#34344d]" /> Wikilinks
             </span>
             <span className="flex items-center gap-1">
-              <span className="inline-block w-6 h-0.5 bg-[#f59e0b60]" style={{ borderTop: '1px dashed #f59e0b60' }} /> Keywords
+              <span style={{ borderTop: "1px dashed #f59e0b60", width: 24 }} /> Keywords
             </span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => zoomBy(1.3)}
+                title="Zoom in"
+                className="w-6 h-6 rounded bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a5a5c0] border border-[#2a2a3a] leading-none"
+              >
+                +
+              </button>
+              <button
+                onClick={() => zoomBy(1 / 1.3)}
+                title="Zoom out"
+                className="w-6 h-6 rounded bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a5a5c0] border border-[#2a2a3a] leading-none"
+              >
+                −
+              </button>
+              <button
+                onClick={resetZoom}
+                title="Reset view"
+                className="w-6 h-6 rounded bg-[#1e1e2e] hover:bg-[#2a2a3e] text-[#a5a5c0] border border-[#2a2a3a] leading-none"
+              >
+                ⌂
+              </button>
+            </div>
+            <span className="text-[#55556a]">hover to highlight · click to open</span>
+            <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">
+              &times;
+            </button>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
         </div>
-        <svg ref={svgRef} className="flex-1 w-full" />
+        <svg ref={svgRef} className="flex-1 w-full" style={{ background: "#0a0a0f", cursor: "grab" }}>
+          {empty && (
+            <text x="50%" y="50%" textAnchor="middle" fill="#8888a0" fontSize="14">
+              No notes yet — the graph fills up as you write.
+            </text>
+          )}
+        </svg>
       </div>
     </div>
   );
@@ -1660,7 +1837,15 @@ export default function App() {
       />
 
       {/* Graph view */}
-      {graphOpen && <GraphViewPanel onClose={() => setGraphOpen(false)} />}
+      {graphOpen && (
+        <GraphViewPanel
+          onClose={() => setGraphOpen(false)}
+          onNavigate={(path) => {
+            setGraphOpen(false);
+            handleSearchSelect(path, "");
+          }}
+        />
+      )}
 
       {/* Vault modals */}
       {createVaultOpen && (
