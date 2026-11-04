@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::{FileDialogBuilder, DialogExt};
 
 use cerebro::config::app::Config;
-use cerebro::config::profile::ProfileConfig;
+use cerebro::config::profile::{ProfileConfig, VaultKind};
 use cerebro::storage::{Note, NoteContent, SearchResult, Storage};
 
 // ── Application State ──────────────────────────────────────────
@@ -25,6 +25,8 @@ pub struct AppState {
     pub storage: Mutex<Option<Storage>>,
     pub profile_config: Mutex<Option<ProfileConfig>>,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
+    /// Path of the currently open vault directory (None until a vault is opened).
+    pub open_vault_path: Mutex<Option<String>>,
 }
 
 // ── DTOs for the frontend ──────────────────────────────────────
@@ -36,6 +38,8 @@ pub struct ProfileInfo {
     pub is_active: bool,
     pub notes_dir: String,
     pub encryption: bool,
+    /// "private" | "business" — ownership tag from vault.toml.
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,6 +94,8 @@ pub struct VaultInfo {
     pub path: String,
     pub note_count: usize,
     pub tag_count: usize,
+    /// "private" | "business" — ownership tag from vault.toml.
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,13 +129,16 @@ fn init_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
     let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
     *storage_guard = Some(storage);
     let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+    let kind_tag = profile_config.kind.as_tag().to_string();
     *pc_guard = Some(profile_config);
+    *state.open_vault_path.lock().map_err(|e| e.to_string())? = Some(path.clone());
 
     Ok(VaultInfo {
         name: profile_name,
         path,
         note_count,
         tag_count,
+        kind: kind_tag,
     })
 }
 
@@ -168,13 +177,19 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
     let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
     *storage_guard = Some(storage);
     let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+    let kind_tag = pc_guard
+        .as_ref()
+        .map(|pc| pc.kind.as_tag().to_string())
+        .unwrap_or_else(|| "private".to_string());
     *pc_guard = Some(profile_config);
+    *state.open_vault_path.lock().map_err(|e| e.to_string())? = Some(path.clone());
 
     Ok(VaultInfo {
         name: profile_name,
         path,
         note_count,
         tag_count,
+        kind: kind_tag,
     })
 }
 
@@ -188,7 +203,12 @@ fn home_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn create_vault(state: State<AppState>, name: String, path: String) -> Result<VaultInfo, String> {
+fn create_vault(
+    state: State<AppState>,
+    name: String,
+    path: String,
+    kind: Option<String>,
+) -> Result<VaultInfo, String> {
     let profile_dir = PathBuf::from(&path);
 
     // Create directory structure
@@ -196,8 +216,11 @@ fn create_vault(state: State<AppState>, name: String, path: String) -> Result<Va
         format!("Failed to create vault directory at {}: {}", path, e)
     })?;
 
-    // Initialize a ProfileConfig with the given name
-    let profile_config = ProfileConfig::new(&name);
+    // Initialize a ProfileConfig with the given name and ownership kind
+    let mut profile_config = ProfileConfig::new(&name);
+    if let Some(k) = kind.as_deref() {
+        profile_config.kind = VaultKind::from_tag(k);
+    }
     profile_config.save_to(&profile_dir).map_err(|e| {
         format!("Failed to save profile config: {}", e)
     })?;
@@ -213,14 +236,44 @@ fn create_vault(state: State<AppState>, name: String, path: String) -> Result<Va
     let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
     *storage_guard = Some(storage);
     let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+    let kind_tag = profile_config.kind.as_tag().to_string();
     *pc_guard = Some(profile_config);
+    *state.open_vault_path.lock().map_err(|e| e.to_string())? = Some(path.clone());
 
     Ok(VaultInfo {
         name,
         path,
         note_count,
         tag_count,
+        kind: kind_tag,
     })
+}
+
+/// Change the ownership tag ("private" | "business") of a vault.
+///
+/// Persists to `<vault>/vault.toml`. If this is the currently open vault,
+/// the in-memory config is updated too, so the UI can re-tag immediately.
+#[tauri::command]
+fn set_vault_kind(state: State<AppState>, path: String, kind: String) -> Result<(), String> {
+    let new_kind = VaultKind::from_tag(&kind);
+    let profile_dir = PathBuf::from(&path);
+
+    let mut profile_config = ProfileConfig::load(&profile_dir)
+        .map_err(|e| format!("Failed to load vault config at {}: {}", path, e))?;
+    profile_config.kind = new_kind;
+    profile_config
+        .save_to(&profile_dir)
+        .map_err(|e| format!("Failed to save vault config at {}: {}", path, e))?;
+
+    // Keep in-memory state consistent if this vault is open right now.
+    let open_path = state.open_vault_path.lock().map_err(|e| e.to_string())?.clone();
+    if open_path.as_deref() == Some(path.as_str()) {
+        let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+        if let Some(open_pc) = pc_guard.as_mut() {
+            open_pc.kind = new_kind;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -265,6 +318,7 @@ fn list_profiles(state: State<AppState>) -> Result<Vec<ProfileInfo>, String> {
                     is_active: active,
                     notes_dir: pc.resolved_notes_dir(&profile_dir).to_string_lossy().to_string(),
                     encryption: pc.encryption,
+                    kind: pc.kind.as_tag().to_string(),
                     name,
                 });
             }
@@ -287,6 +341,7 @@ fn get_active_profile(state: State<AppState>) -> Result<ProfileInfo, String> {
         is_active: true,
         notes_dir: pc.resolved_notes_dir(&profile_dir).to_string_lossy().to_string(),
         encryption: pc.encryption,
+        kind: pc.kind.as_tag().to_string(),
     })
 }
 
@@ -980,6 +1035,7 @@ pub fn run() {
             storage: Mutex::new(None),
             profile_config: Mutex::new(None),
             watcher: Mutex::new(None),
+            open_vault_path: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             home_dir,
@@ -987,6 +1043,7 @@ pub fn run() {
             pick_directory,
             init_vault,
             open_vault,
+            set_vault_kind,
             list_profiles,
             get_active_profile,
             list_notes,

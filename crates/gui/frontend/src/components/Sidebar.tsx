@@ -26,6 +26,7 @@ interface ProfileInfo {
   display_name: string;
   is_active: boolean;
   notes_dir: string;
+  kind?: string;
 }
 
 interface SidebarProps {
@@ -830,7 +831,19 @@ export default function Sidebar({
                         profile.is_active ? "bg-[#7c5cfc]" : "bg-[#55556a]"
                       }`}
                     />
-                    <span className="truncate">{profile.display_name}</span>
+                    <span className="truncate flex-1 min-w-0">{profile.display_name}</span>
+                    {profile.kind && (
+                      <span
+                        className="flex-shrink-0 text-[8.5px] font-semibold uppercase tracking-wide rounded px-1 py-px"
+                        style={
+                          profile.kind === 'business'
+                            ? { color: '#f59e0b', backgroundColor: '#f59e0b1f', border: '1px solid #f59e0b55' }
+                            : { color: '#6366f1', backgroundColor: '#6366f11f', border: '1px solid #6366f155' }
+                        }
+                      >
+                        {profile.kind === 'business' ? '💼 Business' : '🔒 Private'}
+                      </span>
+                    )}
                   </button>
                 ))
               )}

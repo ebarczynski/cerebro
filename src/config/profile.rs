@@ -24,6 +24,43 @@ pub enum SyncMethod {
 }
 
 // ---------------------------------------------------------------------------
+// Vault kind
+// ---------------------------------------------------------------------------
+
+/// Ownership kind of a vault — private (personal) vs business (corporate).
+///
+/// Stored in `vault.toml` so the GUI can colour-code and tag vaults, and
+/// flag the recently-used list. Defaults to `private` for configs created
+/// before the field existed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VaultKind {
+    /// Personal vault.
+    #[default]
+    Private,
+    /// Corporate / work vault.
+    Business,
+}
+
+impl VaultKind {
+    /// Machine-readable tag used by the GUI ("private" | "business").
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            VaultKind::Private => "private",
+            VaultKind::Business => "business",
+        }
+    }
+
+    /// Parse the tag form ("private" | "business"), case-insensitive.
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_lowercase().as_str() {
+            "business" | "work" | "corporate" => VaultKind::Business,
+            _ => VaultKind::Private,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TOML section structs
 // ---------------------------------------------------------------------------
 
@@ -125,6 +162,10 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub encryption: bool,
 
+    /// Ownership kind — private (personal) vs business (corporate).
+    #[serde(default)]
+    pub kind: VaultKind,
+
     /// Knowledge Palace integration.
     #[serde(default)]
     pub knowledge_palace: KnowledgePalaceSection,
@@ -156,6 +197,7 @@ impl ProfileConfig {
             display_name,
             notes_dir: default_notes_dir(),
             encryption: false,
+            kind: VaultKind::default(),
             knowledge_palace: KnowledgePalaceSection::default(),
             confluence: ConfluenceSection::default(),
             sync: SyncSection::default(),
@@ -353,5 +395,31 @@ mod tests {
             p.resolved_notes_dir(Path::new("/home/user/.cerebro/profiles/test")),
             PathBuf::from("/home/user/.cerebro/profiles/test/notes")
         );
+    }
+
+    #[test]
+    fn vault_kind_defaults_to_private_and_parses_legacy_toml() {
+        // A vault.toml written before `kind` existed must parse as Private.
+        let legacy_toml = "name = \"legacy\"\ndisplay_name = \"Legacy\"\n";
+        let cfg: ProfileConfig = toml::from_str(legacy_toml).unwrap();
+        assert_eq!(cfg.kind, VaultKind::Private);
+    }
+
+    #[test]
+    fn vault_kind_roundtrip_and_tags() {
+        let mut p = ProfileConfig::new("work");
+        p.kind = VaultKind::Business;
+        let toml_str = toml::to_string_pretty(&p).unwrap();
+        assert!(toml_str.contains("business"));
+        let parsed: ProfileConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed, p);
+
+        assert_eq!(VaultKind::default(), VaultKind::Private);
+        assert_eq!(VaultKind::from_tag("BUSINESS"), VaultKind::Business);
+        assert_eq!(VaultKind::from_tag("work"), VaultKind::Business);
+        assert_eq!(VaultKind::from_tag("private"), VaultKind::Private);
+        assert_eq!(VaultKind::from_tag("garbage"), VaultKind::Private);
+        assert_eq!(VaultKind::Business.as_tag(), "business");
+        assert_eq!(VaultKind::Private.as_tag(), "private");
     }
 }

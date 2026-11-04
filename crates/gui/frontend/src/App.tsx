@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
-import StatusBar from "./components/StatusBar";
+import StatusBar, { KindBadge, formatRelativeTime } from "./components/StatusBar";
 import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
 
 // ── Types ──────────────────────────────────────────────────────
@@ -48,6 +48,17 @@ interface ProfileInfo {
   is_active: boolean;
   notes_dir: string;
   encryption: boolean;
+  kind: string;
+}
+
+type VaultKindTag = "private" | "business";
+
+interface RecentVault {
+  path: string;
+  profile: string;
+  name: string;
+  kind: VaultKindTag;
+  lastOpenedAt: number;
 }
 
 type ViewMode = "edit" | "preview" | "split";
@@ -397,15 +408,58 @@ function GraphViewPanel({ onClose }: { onClose: () => void }) {
 
 // ── Welcome Screen ─────────────────────────────────────────────
 
-function WelcomeScreen({ onOpen, onCreate }: { onOpen: () => void; onCreate: () => void }) {
+function WelcomeScreen({
+  onOpen,
+  onCreate,
+  recentVaults,
+  onSwitchVault,
+}: {
+  onOpen: () => void;
+  onCreate: () => void;
+  recentVaults: RecentVault[];
+  onSwitchVault: (entry: RecentVault) => void;
+}) {
   return (
-    <div className="flex-1 flex items-center justify-center bg-[#0a0a0f]">
-      <div className="text-center max-w-md">
+    <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] overflow-auto">
+      <div className="text-center max-w-md py-8">
         <div className="text-6xl mb-6">🧠</div>
         <h1 className="text-3xl font-bold text-white mb-3">Cerebro</h1>
         <p className="text-[#8888a0] mb-8 leading-relaxed">
           Your personal knowledge base. Store notes, connect ideas, and explore your knowledge graph.
         </p>
+
+        {recentVaults.length > 0 && (
+          <div className="mb-6 text-left">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8888a0] mb-2">
+              Recent Vaults
+            </p>
+            <div className="space-y-1.5">
+              {recentVaults.slice(0, 5).map((v) => (
+                <button
+                  key={v.path}
+                  onClick={() => onSwitchVault(v)}
+                  className="w-full flex items-center gap-2 p-2.5 rounded-lg bg-[#1a1a25] hover:bg-[#2a2a3a] border border-[#2a2a3a] transition-colors text-left"
+                >
+                  <KindBadge kind={v.kind} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-white truncate">{v.name}</p>
+                    <p
+                      className="truncate text-[10px] text-[#8888a0]"
+                      style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+                      title={v.path}
+                    >
+                      {v.path}
+                    </p>
+                  </div>
+                  <span className="text-[9px] text-[#71717a] flex-shrink-0">
+                    {formatRelativeTime(v.lastOpenedAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-3">
           <button
             onClick={onOpen}
@@ -427,11 +481,62 @@ function WelcomeScreen({ onOpen, onCreate }: { onOpen: () => void; onCreate: () 
 
 // ── Main App ───────────────────────────────────────────────────
 
+const RECENT_VAULTS_KEY = 'cerebro-recent-vaults';
+// Legacy single-vault key (pre-0.3). Only used to seed the recent list once.
 const LAST_VAULT_KEY = 'cerebro-last-vault';
 
-interface LastVault {
-  profile: string;
-  path: string;
+const MAX_RECENT_VAULTS = 10;
+
+function normalizeKind(kind: string | undefined | null): VaultKindTag {
+  return kind === 'business' ? 'business' : 'private';
+}
+
+function loadRecentVaults(): RecentVault[] {
+  try {
+    const raw = localStorage.getItem(RECENT_VAULTS_KEY);
+    if (raw) {
+      const list = JSON.parse(raw) as RecentVault[];
+      if (Array.isArray(list)) return list;
+    }
+    // Migrate the legacy single-vault key into the recent list.
+    const legacy = localStorage.getItem(LAST_VAULT_KEY);
+    if (legacy) {
+      const last = JSON.parse(legacy) as { profile: string; path: string };
+      if (last.profile && last.path) {
+        const seeded: RecentVault[] = [{
+          path: last.path,
+          profile: last.profile,
+          name: last.profile,
+          kind: 'private',
+          lastOpenedAt: Date.now(),
+        }];
+        localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(seeded));
+        return seeded;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+function persistRecentVaults(list: RecentVault[]) {
+  try {
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+/** Upsert a vault into the recent list (dedup by path, most-recent first). */
+function upsertRecentVault(entry: { path: string; profile: string; name: string; kind: VaultKindTag }): RecentVault[] {
+  const list = loadRecentVaults().filter((v) => v.path !== entry.path);
+  list.unshift({ ...entry, lastOpenedAt: Date.now() });
+  const capped = list.slice(0, MAX_RECENT_VAULTS);
+  persistRecentVaults(capped);
+  return capped;
+}
+
+function removeRecentVault(path: string): RecentVault[] {
+  const list = loadRecentVaults().filter((v) => v.path !== path);
+  persistRecentVaults(list);
+  return list;
 }
 
 export default function App() {
@@ -452,6 +557,9 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   const [vaultOpen, setVaultOpen] = useState(false);
+  const [vaultPath, setVaultPath] = useState<string | null>(null);
+  const [vaultKind, setVaultKind] = useState<VaultKindTag>("private");
+  const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => loadRecentVaults());
   const [wordCount, setWordCount] = useState(0);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
@@ -464,18 +572,20 @@ export default function App() {
 
   // ── Load vault ─────────────────────────────────────────────
 
-  const loadVault = useCallback(async (profileName?: string, vaultPath?: string) => {
+  const loadVault = useCallback(async (profileName?: string, vaultPath?: string): Promise<boolean> => {
     try {
       const home = await homeDir();
       const profile = profileName || "personal";
       const path = vaultPath || `${home}.cerebro/profiles/${profile}`;
 
-      const info = await invoke<{ name: string; path: string; note_count: number; tag_count: number }>("open_vault", {
+      const info = await invoke<{ name: string; path: string; note_count: number; tag_count: number; kind: string }>("open_vault", {
         path,
         profile,
       });
 
       setVaultOpen(true);
+      setVaultPath(info.path);
+      setVaultKind(normalizeKind(info.kind));
 
       const [notesList, tagsList, profilesList] = await Promise.all([
         invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
@@ -503,13 +613,18 @@ export default function App() {
         console.warn("File watcher not started:", e);
       }
 
-      // Persist last opened vault for auto-loading on next startup
-      try {
-        localStorage.setItem(LAST_VAULT_KEY, JSON.stringify({ profile, path }));
-      } catch {}
+      // Record in the recently-used list (auto-opens on next startup)
+      setRecentVaults(upsertRecentVault({
+        path: info.path,
+        profile,
+        name: info.name || profile,
+        kind: normalizeKind(info.kind),
+      }));
+      return true;
     } catch (e) {
       console.error("Failed to load vault:", e);
       setVaultOpen(false);
+      return false;
     }
   }, []);
 
@@ -529,69 +644,77 @@ export default function App() {
     try {
       const name = prompt('Enter vault name:', 'my-vault');
       if (!name) return;
+      const isBusiness = confirm(
+        'Is this a BUSINESS (corporate/work) vault?\n\nOK = Business · Cancel = Private'
+      );
+      const kind: VaultKindTag = isBusiness ? 'business' : 'private';
       const home = await homeDir();
       const vaultPath = `${home}.cerebro/profiles/${name}`;
-      await invoke('create_vault', { name, path: vaultPath });
+      await invoke('create_vault', { name, path: vaultPath, kind });
       await loadVault(name, vaultPath);
+      setToastMessage(`Created ${kind === 'business' ? '💼 business' : '🔒 private'} vault "${name}"`);
+      setTimeout(() => setToastMessage(null), 3000);
     } catch (e) {
       console.error("Failed to create vault:", e);
     }
   }, [loadVault]);
 
-  // Auto-load on mount — try last opened vault, fall back to "personal"
+  // ── Vault switching (recent list) ──────────────────────────
+
+  const handleSwitchVault = useCallback(async (entry: RecentVault) => {
+    const ok = await loadVault(entry.profile, entry.path);
+    if (!ok) {
+      // Vault directory is gone — drop it from the recent list so the
+      // switcher doesn't accumulate dead entries.
+      setRecentVaults(removeRecentVault(entry.path));
+      setToastMessage(`Vault not found at ${entry.path} — removed from recent list`);
+      setTimeout(() => setToastMessage(null), 4000);
+    }
+  }, [loadVault]);
+
+  /** Flip the ownership tag of the currently open vault (private ↔ business). */
+  const handleSetVaultKind = useCallback(async (kind: VaultKindTag) => {
+    if (!vaultPath) return;
+    try {
+      await invoke('set_vault_kind', { path: vaultPath, kind });
+      setVaultKind(kind);
+      setRecentVaults(upsertRecentVault({
+        path: vaultPath,
+        profile: activeProfile?.name || vaultPath.split('/').pop() || 'personal',
+        name: activeProfile?.display_name || vaultPath.split('/').pop() || 'vault',
+        kind,
+      }));
+      setToastMessage(`Vault marked as ${kind === 'business' ? '💼 business' : '🔒 private'}`);
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (e) {
+      console.error("Failed to set vault kind:", e);
+    }
+  }, [vaultPath, activeProfile]);
+
+  // Auto-load on mount — reopen the most recently used vault; fall back to
+  // older entries, then the default "personal" profile, then the welcome screen.
   useEffect(() => {
     (async () => {
-      try {
-        const home = await homeDir();
+      const home = await homeDir();
 
-        // Try to restore the last opened vault
-        let profile = 'personal';
-        let defaultPath = `${home}.cerebro/profiles/personal`;
-        try {
-          const stored = localStorage.getItem(LAST_VAULT_KEY);
-          if (stored) {
-            const last = JSON.parse(stored) as LastVault;
-            if (last.profile && last.path) {
-              profile = last.profile;
-              defaultPath = last.path;
-            }
-          }
-        } catch {}
+      const candidates: Array<{ profile: string; path: string }> = loadRecentVaults()
+        .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+        .map((v) => ({ profile: v.profile, path: v.path }));
+      candidates.push({ profile: 'personal', path: `${home}.cerebro/profiles/personal` });
+      const recentPaths = new Set(candidates.slice(0, -1).map((c) => c.path));
 
-        // Try to open vault silently
-        await invoke('open_vault', { path: defaultPath, profile });
-        setVaultOpen(true);
-
-        const [notesList, tagsList, profilesList] = await Promise.all([
-          invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
-          invoke<TagInfo[]>("list_tags"),
-          invoke<ProfileInfo[]>("list_profiles"),
-        ]);
-
-        setNotes(notesList);
-        setTags(tagsList);
-        setProfiles(profilesList);
-
-        const ap = profilesList.find((p) => p.is_active) || profilesList[0] || null;
-        setActiveProfile(ap);
-
-        // Cache note titles for wikilink autocomplete
-        setNoteTitles(notesList.map((n: Note) => n.title));
-
-        // Start file watcher
-        try {
-          const notesDir = ap?.notes_dir || '';
-          if (notesDir) {
-            await invoke("start_watcher", { notesDir });
-          }
-        } catch (e) {
-          console.warn("File watcher not started:", e);
+      for (const c of candidates) {
+        const ok = await loadVault(c.profile, c.path);
+        if (ok) return;
+        // Stale recent entry (vault dir deleted) — prune it so the next
+        // startup doesn't retry a dead path first.
+        if (recentPaths.has(c.path)) {
+          setRecentVaults(removeRecentVault(c.path));
         }
-      } catch {
-        setVaultOpen(false);
       }
+      setVaultOpen(false);
     })();
-  }, []);
+  }, [loadVault]);
 
   // ── File watcher: listen for vault-changed events ────────────
   useEffect(() => {
@@ -938,7 +1061,12 @@ export default function App() {
   if (!vaultOpen) {
     return (
       <div className="h-screen flex flex-col">
-        <WelcomeScreen onOpen={handleOpenVault} onCreate={handleCreateVault} />
+        <WelcomeScreen
+          onOpen={handleOpenVault}
+          onCreate={handleCreateVault}
+          recentVaults={recentVaults}
+          onSwitchVault={handleSwitchVault}
+        />
         <StatusBar
           noteCount={0}
           wordCount={0}
@@ -946,6 +1074,12 @@ export default function App() {
           profileName="—"
           activeNoteTitle={null}
           syncStatus="offline"
+          vaultPath={null}
+          vaultKind="private"
+          recentVaults={recentVaults}
+          onSwitchVault={handleSwitchVault}
+          onOpenOther={handleOpenVault}
+          onSetKind={handleSetVaultKind}
         />
       </div>
     );
@@ -1150,6 +1284,12 @@ export default function App() {
         profileName={activeProfile?.display_name || "—"}
         activeNoteTitle={activeNote?.title || null}
         syncStatus={saving ? "syncing" : "synced"}
+        vaultPath={vaultPath}
+        vaultKind={vaultKind}
+        recentVaults={recentVaults}
+        onSwitchVault={handleSwitchVault}
+        onOpenOther={handleOpenVault}
+        onSetKind={handleSetVaultKind}
       />
 
       {/* Search modal */}
