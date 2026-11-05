@@ -106,6 +106,15 @@ jobs:
         working-directory: crates/gui
         run: frontend/node_modules/.bin/tauri build --bundles app,dmg
 
+      - name: Verify ad-hoc code signature
+        # Unsigned bundles trigger macOS Sequoia's "app is damaged" error when
+        # downloaded — signingIdentity "-" ad-hoc signs in tauri.conf.json; fail
+        # the build rather than shipping a bundle Gatekeeper rejects.
+        run: |
+          codesign --verify --deep --strict target/release/bundle/macos/Cerebro.app
+          echo "✅ Ad-hoc signature valid"
+          codesign -dv target/release/bundle/macos/Cerebro.app 2>&1 | head -5
+
       - name: Stage artifacts
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -146,8 +155,9 @@ jobs:
 
           **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search
           (FTS5) · automatic keyword links · Obsidian-style knowledge graph ·
-          document import (PDF/DOCX/XLSX/PPTX) · 🔒/💼 vaults with recents ·
-          MCP server · Confluence connector · CLI.
+          💠 Obsidian vault import (folder structure, frontmatter tags, wikilinks) ·
+          document import (PDF/DOCX/XLSX/PPTX and more) · 🔒/💼 vaults with recents ·
+          keyboard shortcuts help (\`?\`) · MCP server · Confluence connector · CLI.
 
           ## 🍎 macOS (Apple Silicon)
 
@@ -157,8 +167,10 @@ jobs:
           | \`Cerebro-${VERSION}-macos-aarch64.app.tar.gz\` | Portable app bundle |
           | \`cerebro-${VERSION}-macos-aarch64.tar.gz\` | CLI binary (arm64) |
 
-          > Unsigned build — Gatekeeper warns on first launch. Right-click → Open,
-          > or \`xattr -cr /Applications/Cerebro.app\`
+          > Ad-hoc signed build (no Apple Developer certificate). Gatekeeper still
+          > warns on first launch — that's expected: right-click → Open, or run
+          > \`xattr -cr /Applications/Cerebro.app\`. It will **not** show
+          > "damaged/corrupted" anymore; if you see that, please open an issue.
 
           ## 🐧 Linux (x86_64)
 

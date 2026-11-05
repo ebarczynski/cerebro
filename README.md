@@ -10,12 +10,18 @@ Built with **Rust 1.96.0** (edition 2024), **Tauri 2.0**, **React 19**,
 
 - **Dual-profile vaults** — separate personal and professional knowledge domains
 - **Markdown-native** — `.md` files are the source of truth, with YAML frontmatter
+- **Obsidian vault import** — import an entire Obsidian vault in one step:
+  folder structure, YAML frontmatter tags, inline `#tags` and `[[wikilinks]]`
+  are all preserved (`.obsidian` config is skipped, duplicates detected)
+- **Document import** — drag & drop PDF, DOCX, PPTX, XLSX/ODS, HTML, Markdown,
+  JSON or source files; each converts to a Markdown note
 - **Wikilinks** — `[[Note Name]]` with `#heading` and `|alias` support
 - **Bidirectional links** — automatic backlink and forward-link tracking
 - **Full-text search** — SQLite FTS5 with Porter stemmer
 - **Tag management** — unified frontmatter `tags:` + inline `#tags`
 - **Daily notes** — `/Daily/YYYY-MM-DD.md` auto-generated
 - **Knowledge graph** — interactive D3.js force-directed graph visualization
+- **Keyboard shortcuts help** — press `?` (or the **?** toolbar button) anytime
 - **Knowledge Palace connector** — semantic/RAG search via pgvector at `localhost:8080`
 - **Confluence publisher** — markdown → Confluence Storage Format → REST API
 - **Git sync** — automatic version control for vaults
@@ -40,15 +46,16 @@ cerebro/
 │   ├── sync/                     # Git-based sync
 │   └── cli/                      # clap CLI interface
 ├── crates/gui/                   # Tauri 2.0 GUI application
-│   ├── src/main.rs               # 19 Tauri commands wired to core lib
+│   ├── src/main.rs               # 40 Tauri commands wired to core lib
 │   ├── frontend/                 # React 19 + TypeScript frontend
 │   │   ├── src/
 │   │   │   ├── App.tsx           # Main app with graph view, preview, welcome
-│   │   │   └── components/       # Sidebar, Editor, Search, StatusBar
+│   │   │   └── components/       # Sidebar, Editor, Search, StatusBar,
+│   │   │                         # ImportDropZone, ImportObsidianModal, ShortcutsModal
 │   │   └── index.css             # TailwindCSS v4 dark theme
 │   └── tauri.conf.json           # Tauri configuration
 ├── migrations/                   # SQLite schema migrations
-└── tests/                        # Integration tests (9 tests)
+└── tests/                        # Integration tests (68 total incl. unit tests)
 ```
 
 ## Quick Start
@@ -92,6 +99,47 @@ cargo tauri dev
 # Build release bundle
 cargo tauri build
 ```
+
+### Importing from Obsidian
+
+Bring an existing Obsidian vault into Cerebro without losing anything:
+
+1. Open a vault in the GUI (create a fresh one if you like)
+2. Click the **💠 gem** button in the toolbar — or press `Ctrl+Shift+O` (`⌘⇧O` on macOS)
+3. Pick your Obsidian vault folder, choose a destination folder (default: `Obsidian/`), and hit **Import Vault**
+
+What's preserved:
+
+| Obsidian artifact | Cerebro result |
+|---|---|
+| Folder structure | Mirrored under the destination folder |
+| Note names | Titles (Obsidian convention: filename without extension) |
+| YAML frontmatter `tags:` | Merged into the note's tags |
+| Inline `#tags` | Merged into the note's tags |
+| `[[wikilinks]]` | Kept as-is and resolved against imported titles |
+| `.obsidian/`, `.trash/`, hidden dirs | Skipped |
+
+Notes that already exist at the destination path are skipped, so re-running an
+import never duplicates anything.
+
+### Keyboard shortcuts
+
+Press `?` anywhere outside a text field (or click the **?** toolbar button) for
+the always-available cheat sheet. Highlights:
+
+| Keys | Action |
+|---|---|
+| `Ctrl+K` | Search notes |
+| `Ctrl+N` | New note |
+| `Ctrl+S` | Save note |
+| `Ctrl+E` | Cycle view: edit → split → preview |
+| `Ctrl+P` | Toggle preview |
+| `Ctrl+G` | Knowledge graph |
+| `Ctrl+Shift+O` | Import Obsidian vault |
+| `Ctrl+F` / `Ctrl+H` | Find / find & replace in note |
+| `Ctrl+=` / `Ctrl−` / `Ctrl+0` | Editor font size up / down / reset |
+
+(Use `⌘` instead of `Ctrl` on macOS.)
 
 ### MCP Tools (for AI coding tools)
 
