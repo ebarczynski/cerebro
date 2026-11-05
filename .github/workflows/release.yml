@@ -70,7 +70,9 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    runs-on: macos-15 # Apple Silicon (arm64) — macos-14 image retired Nov 2026
+    runs-on: macos-26 # Apple Silicon, macOS 26 (Tahoe) — we target macOS 26+
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -101,10 +103,13 @@ jobs:
           tar czf "cerebro-${VERSION}-macos-aarch64.tar.gz" -C target/release cerebro
           shasum -a 256 "cerebro-${VERSION}-macos-aarch64.tar.gz" > "cerebro-${VERSION}-macos-aarch64.tar.gz.sha256"
 
-      - name: Build GUI bundle (app + dmg, arm64)
-        # Same as Linux: discover from crates/gui, use frontend's local bin
+      - name: Build GUI app bundle (arm64)
+        # Same as Linux: discover from crates/gui, use frontend's local bin.
+        # Only the .app is built here — the DMG is created deterministically
+        # with hdiutil below (tauri's bundle_dmg.sh drives Finder via
+        # AppleScript, which new runner images may not authorize).
         working-directory: crates/gui
-        run: frontend/node_modules/.bin/tauri build --bundles app,dmg
+        run: frontend/node_modules/.bin/tauri build --bundles app
 
       - name: Verify ad-hoc code signature
         # Unsigned bundles trigger macOS Sequoia's "app is damaged" error when
@@ -114,6 +119,18 @@ jobs:
           codesign --verify --deep --strict target/release/bundle/macos/Cerebro.app
           echo "✅ Ad-hoc signature valid"
           codesign -dv target/release/bundle/macos/Cerebro.app 2>&1 | head -5
+
+      - name: Package DMG (hdiutil, no Finder automation)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGING=$(mktemp -d)
+          cp -R target/release/bundle/macos/Cerebro.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          mkdir -p target/release/bundle/dmg
+          hdiutil create -volname Cerebro \
+            -srcfolder "$STAGING" -ov -format UDZO \
+            "target/release/bundle/dmg/Cerebro_${VERSION}_aarch64.dmg"
+          hdiutil verify "target/release/bundle/dmg/Cerebro_${VERSION}_aarch64.dmg"
 
       - name: Stage artifacts
         run: |
@@ -159,7 +176,7 @@ jobs:
           document import (PDF/DOCX/XLSX/PPTX and more) · 🔒/💼 vaults with recents ·
           keyboard shortcuts help (\`?\`) · MCP server · Confluence connector · CLI.
 
-          ## 🍎 macOS (Apple Silicon)
+          ## 🍎 macOS (Apple Silicon) — requires macOS 26 (Tahoe) or newer
 
           | File | What it is |
           |---|---|
@@ -184,7 +201,7 @@ jobs:
           All CLI archives ship with \`.sha256\` checksums.
 
           *Built automatically by GitHub Actions on ubuntu-latest (x86_64) and
-          macos-15 (Apple Silicon).*
+          macos-26 (Apple Silicon, deployment target macOS 26).*
           EOF
 
       - name: Create GitHub release

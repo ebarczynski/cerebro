@@ -84,6 +84,9 @@ cerebro mcp
 
 ### GUI
 
+**macOS:** requires macOS 26 (Tahoe) or newer — grab the signed DMG from
+[Releases](https://github.com/ebarczynski/cerebro/releases/latest).
+
 ```bash
 # Prerequisites (Linux)
 sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \

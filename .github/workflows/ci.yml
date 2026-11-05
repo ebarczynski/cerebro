@@ -20,7 +20,7 @@ jobs:
         include:
           - os: ubuntu-latest # x86_64
             name: linux-x86_64
-          - os: macos-15 # Apple Silicon (arm64) — macos-14 image retired Nov 2026
+          - os: macos-26 # Apple Silicon — app targets macOS 26+
             name: macos-aarch64
     runs-on: ${{ matrix.os }}
     name: build & test (${{ matrix.name }})

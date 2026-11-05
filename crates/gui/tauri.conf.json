@@ -36,7 +36,8 @@
       "icons/icon.icns"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "minimumSystemVersion": "26.0"
     }
   }
 }
