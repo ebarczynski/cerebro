@@ -70,7 +70,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    runs-on: macos-14 # Apple Silicon (M1, arm64)
+    runs-on: macos-15 # Apple Silicon (arm64) — macos-14 image retired Nov 2026
     steps:
       - uses: actions/checkout@v4
 
@@ -184,7 +184,7 @@ jobs:
           All CLI archives ship with \`.sha256\` checksums.
 
           *Built automatically by GitHub Actions on ubuntu-latest (x86_64) and
-          macos-14 (M1).*
+          macos-15 (Apple Silicon).*
           EOF
 
       - name: Create GitHub release
