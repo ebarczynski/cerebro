@@ -207,7 +207,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Cerebro v${{ github.ref_name }}"
+          name: "Cerebro ${{ github.ref_name }}" # ref_name already includes the v
           body_path: NOTES.md
           files: release/*
           fail_on_unmatched_files: true
