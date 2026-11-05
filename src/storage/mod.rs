@@ -242,6 +242,17 @@ impl Storage {
         })
     }
 
+    /// Returns true when a note with this path already exists in the vault.
+    pub fn note_exists(&self, path: &str) -> bool {
+        self.db
+            .query_row(
+                "SELECT 1 FROM notes WHERE path = ?1 AND deleted_at IS NULL",
+                params![path],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
     pub fn update_note(&mut self, identifier: &str, new_content: &str) -> Result<Note> {
         let note = self.find_note(identifier)?;
         let parsed = extract_links_and_metadata(new_content);

@@ -324,9 +324,9 @@ export default function Sidebar({
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Search notes..."
               className="
-                w-full pl-8 pr-3 py-1.5
+                w-full pl-8 pr-3 py-2
                 bg-[#1a1a28] border border-[#2a2a3a] rounded-md
-                text-sm text-[#c8c8e0] placeholder-[#55556a]
+                text-sm text-[#e2e2ee] placeholder-[#6b6b85]
                 outline-none focus:border-[#7c5cfc] focus:ring-1 focus:ring-[#7c5cfc]/40
                 transition-colors duration-150
               "
@@ -337,7 +337,7 @@ export default function Sidebar({
 
       {/* --- Quick Actions --- */}
       <div
-        className={`px-2 pb-2 flex gap-1.5 ${
+        className={`px-2 pb-2 flex gap-2.5 ${
           collapsed ? "flex-col items-center" : ""
         }`}
       >

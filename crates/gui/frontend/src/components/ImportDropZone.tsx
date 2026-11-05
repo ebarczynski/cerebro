@@ -256,7 +256,7 @@ export default function ImportDropZone({
       <button
         onClick={handlePickFiles}
         disabled={importing}
-        className="p-1.5 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors disabled:opacity-50"
+        className="p-2 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors disabled:opacity-50"
         title="Import files (MD, TXT, JSON, CSV, PDF, DOCX, PPTX, and more)"
       >
         <svg

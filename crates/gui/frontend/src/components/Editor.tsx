@@ -13,7 +13,7 @@ import { Extension, EditorState } from '@codemirror/state';
 import { invoke } from "@tauri-apps/api/core";
 
 const FONT_SIZE_STORAGE_KEY = 'cerebro-editor-font-size';
-const DEFAULT_FONT_SIZE = 14;
+const DEFAULT_FONT_SIZE = 15;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
 
@@ -57,13 +57,13 @@ interface EditorProps {
 const cerebroTheme = EditorView.theme({
   '&': {
     backgroundColor: '#0a0a0f',
-    color: '#d4d4d8',
+    color: '#e2e2ee',
     height: '100%',
   },
   '.cm-content': {
     caretColor: '#6366f1',
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, monospace',
-    padding: '8px 0',
+    padding: '16px 24px 32px',
   },
   '.cm-cursor': {
     borderLeftColor: '#6366f1',
@@ -93,7 +93,7 @@ const cerebroTheme = EditorView.theme({
   },
   '.cm-scroller': {
     overflow: 'auto',
-    lineHeight: '1.6',
+    lineHeight: '1.75',
   },
   '.cm-focused': {
     outline: 'none',
@@ -653,7 +653,7 @@ const Editor: React.FC<EditorProps> = ({ value, onChange, onSave, readOnly = fal
             value={replaceText}
             onChange={(e) => setReplaceText(e.target.value)}
             placeholder="Replace with..."
-            className="flex-1 bg-[#0a0a0f] text-sm text-zinc-200 placeholder-zinc-600 outline-none border border-[#2a2a3a] rounded px-2 py-1 focus:border-[#6366f1]"
+            className="flex-1 bg-[#0a0a0f] text-sm text-zinc-100 placeholder-zinc-500 outline-none border border-[#2a2a3a] rounded px-2.5 py-1.5 focus:border-[#6366f1] focus:ring-1 focus:ring-[#6366f1]/40 transition-colors"
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();

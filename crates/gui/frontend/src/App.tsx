@@ -7,6 +7,8 @@ import Editor from "./components/Editor";
 import SearchModal from "./components/SearchModal";
 import StatusBar, { KindBadge, formatRelativeTime, VAULT_KIND_META } from "./components/StatusBar";
 import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
+import ImportObsidianModal, { type VaultImportSummary } from "./components/ImportObsidianModal";
+import ShortcutsModal from "./components/ShortcutsModal";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -711,7 +713,7 @@ function CreateVaultModal({
             if (e.key === "Enter") submit();
           }}
           placeholder="my-vault"
-          className="w-full px-3 py-2 bg-[#0a0a0f] border border-[#2a2a3a] rounded-lg text-sm text-white placeholder-[#55556a] focus:outline-none focus:border-[#6366f1]"
+          className="w-full px-3 py-2 bg-[#0a0a0f] border border-[#2a2a3a] rounded-lg text-sm text-white placeholder-[#6b6b85] focus:outline-none focus:border-[#6366f1] focus:ring-1 focus:ring-[#6366f1]/40"
         />
 
         <label className="block text-xs font-semibold uppercase tracking-wider text-[#8888a0] mb-1.5 mt-4">
@@ -1071,6 +1073,8 @@ export default function App() {
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => loadRecentVaults());
   const [createVaultOpen, setCreateVaultOpen] = useState(false);
   const [openVaultOpen, setOpenVaultOpen] = useState(false);
+  const [importObsidianOpen, setImportObsidianOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Note | null>(null);
   const [wordCount, setWordCount] = useState(0);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -1535,11 +1539,46 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 5000);
   }, []);
 
+  // ── Obsidian vault import ─────────────────────────────────
+
+  const handleVaultImported = useCallback(async (summary: VaultImportSummary) => {
+    // Refresh the lists so imported notes show up immediately
+    try {
+      const [notesList, tagsList] = await Promise.all([
+        invoke<Note[]>("list_notes", { limit: 500, offset: 0 }),
+        invoke<TagInfo[]>("list_tags"),
+      ]);
+      setNotes(notesList);
+      setTags(tagsList);
+      setNoteTitles(notesList.map((n: Note) => n.title));
+    } catch (e) {
+      console.error("Failed to reload notes after vault import:", e);
+    }
+
+    if (summary.imported > 0 || summary.failed > 0) {
+      const msg =
+        summary.failed > 0
+          ? `Imported ${summary.imported} note(s) from Obsidian · ${summary.failed} failed`
+          : `Imported ${summary.imported} note(s) from Obsidian vault`;
+      setToastMessage(msg);
+    } else if (summary.skipped > 0) {
+      setToastMessage(`Nothing new to import — ${summary.skipped} note(s) already exist`);
+    }
+    setTimeout(() => setToastMessage(null), 4000);
+  }, []);
+
   // ── Keyboard shortcuts ─────────────────────────────────────
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      // Ignore shortcuts that would collide with typing in inputs/editor
+      const target = e.target as HTMLElement | null;
+      const typingInField =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable === true;
+
       if (mod && e.key === "k") {
         e.preventDefault();
         setSearchOpen(true);
@@ -1566,18 +1605,30 @@ export default function App() {
         e.preventDefault();
         setGraphOpen(true);
       }
+      // Ctrl+Shift+O — import an Obsidian vault
+      if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        if (vaultOpen) setImportObsidianOpen(true);
+      }
+      // "?" outside text fields, or Ctrl+/ anywhere — keyboard shortcuts help
+      if ((e.key === "?" && !typingInField) || (mod && e.key === "/")) {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      }
       if (e.key === "Escape") {
         setSearchOpen(false);
         setGraphOpen(false);
         setRightPanelOpen(false);
         setCreateVaultOpen(false);
         setOpenVaultOpen(false);
+        setImportObsidianOpen(false);
+        setShortcutsOpen(false);
         setDeleteTarget(null);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [createNote, saveNote]);
+  }, [createNote, saveNote, vaultOpen]);
 
   // ── Render ─────────────────────────────────────────────────
 
@@ -1615,6 +1666,7 @@ export default function App() {
             onClose={() => setOpenVaultOpen(false)}
           />
         )}
+        {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
       </div>
     );
   }
@@ -1641,9 +1693,9 @@ export default function App() {
           )}
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           {/* View mode toggle */}
-          <div className="flex bg-[#0a0a0f] rounded-lg p-0.5 mr-2">
+          <div className="flex bg-[#0a0a0f] rounded-lg p-0.5 mr-3">
             {(["edit", "split", "preview"] as ViewMode[]).map((mode) => (
               <button
                 key={mode}
@@ -1660,13 +1712,25 @@ export default function App() {
           {/* Graph button */}
           <button
             onClick={() => setGraphOpen(true)}
-            className="p-1.5 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
+            className="p-2 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
             title="Knowledge Graph (Ctrl+G)"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3" /><circle cx="4" cy="6" r="2" /><circle cx="20" cy="6" r="2" />
               <circle cx="4" cy="18" r="2" /><circle cx="20" cy="18" r="2" />
               <path d="M9.5 10.5L5.5 7.5M14.5 10.5L18.5 7.5M9.5 13.5L5.5 16.5M14.5 13.5L18.5 16.5" />
+            </svg>
+          </button>
+
+          {/* Import Obsidian vault */}
+          <button
+            onClick={() => setImportObsidianOpen(true)}
+            className="p-2 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
+            title="Import Obsidian vault (Ctrl+Shift+O)"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3h12l4 6-10 12L2 9z" />
+              <path d="M2 9h20M9.5 3L7 9l5 12 5-12-2.5-6" />
             </svg>
           </button>
 
@@ -1680,7 +1744,7 @@ export default function App() {
           {/* Backlinks toggle */}
           <button
             onClick={() => setRightPanelOpen(!rightPanelOpen)}
-            className={`p-1.5 rounded transition-colors ${
+            className={`p-2 rounded transition-colors ${
               rightPanelOpen ? "bg-[#6366f1]/20 text-[#818cf8]" : "text-[#8888a0] hover:bg-[#1a1a25] hover:text-white"
             }`}
             title="Backlinks panel"
@@ -1694,11 +1758,24 @@ export default function App() {
           {/* Search button */}
           <button
             onClick={() => setSearchOpen(true)}
-            className="p-1.5 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
+            className="p-2 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
             title="Search (Ctrl+K)"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+            </svg>
+          </button>
+
+          {/* Keyboard shortcuts help */}
+          <button
+            onClick={() => setShortcutsOpen((v) => !v)}
+            className="p-2 hover:bg-[#1a1a25] rounded text-[#8888a0] hover:text-white transition-colors"
+            title="Keyboard shortcuts (?)"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
           </button>
         </div>
@@ -1760,6 +1837,7 @@ export default function App() {
                 <div className="text-4xl mb-4">📝</div>
                 <p className="text-lg">Select a note or create a new one</p>
                 <p className="text-sm mt-2">Ctrl+N to create · Ctrl+K to search · Ctrl+E to cycle views</p>
+                <p className="text-xs mt-1 text-[#6b6b85]">Press ? for all keyboard shortcuts</p>
               </div>
             </div>
           )}
@@ -1858,6 +1936,13 @@ export default function App() {
           onClose={() => setOpenVaultOpen(false)}
         />
       )}
+      {importObsidianOpen && (
+        <ImportObsidianModal
+          onClose={() => setImportObsidianOpen(false)}
+          onImported={handleVaultImported}
+        />
+      )}
+      {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
       {deleteTarget && (
         <ConfirmDialog
           title="Delete note?"

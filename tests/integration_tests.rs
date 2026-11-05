@@ -197,3 +197,22 @@ fn test_note_with_frontmatter() {
     let read_back = storage.read_note(&note.id).unwrap();
     assert!(read_back.body.contains("Content here"));
 }
+
+#[test]
+fn test_note_exists() {
+    let (_vault, mut storage) = TestVault::new("note_exists");
+
+    assert!(!storage.note_exists("folder/note.md"));
+
+    storage
+        .create_note(
+            "Path Note",
+            "# Path Note",
+            Some("folder/note.md"),
+            None,
+        )
+        .unwrap();
+
+    assert!(storage.note_exists("folder/note.md"));
+    assert!(!storage.note_exists("other/note.md"));
+}

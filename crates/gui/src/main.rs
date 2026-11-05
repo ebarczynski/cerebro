@@ -4,7 +4,7 @@
 //! Knowledge Palace connector, Confluence publisher) as Tauri commands
 //! consumed by the React/TypeScript frontend.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -850,6 +850,158 @@ fn import_documents(state: State<AppState>, file_paths: Vec<String>, folder: Opt
     Ok(results)
 }
 
+// ── Obsidian Vault Import ────────────────────────────────────────
+
+/// Directories inside an Obsidian vault that are never imported.
+const OBSIDIAN_SKIP_DIRS: &[&str] = &[".obsidian", ".trash", ".git", ".smart-env", "node_modules"];
+/// Hard cap so a monstrous vault can't wedge the app indefinitely.
+const MAX_OBSIDIAN_IMPORT_FILES: usize = 5000;
+
+/// Recursively collect `.md` files, skipping hidden dirs and Obsidian metadata.
+fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 16 || out.len() >= MAX_OBSIDIAN_IMPORT_FILES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            if name.starts_with('.') || OBSIDIAN_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            collect_markdown_files(&path, out, depth + 1);
+        } else if name.to_ascii_lowercase().ends_with(".md") && out.len() < MAX_OBSIDIAN_IMPORT_FILES {
+            out.push(path);
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportVaultResponse {
+    pub imported: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub total_found: usize,
+    /// First few error messages (capped to keep the payload sane).
+    pub errors: Vec<String>,
+}
+
+/// Walk an Obsidian-style vault and import every Markdown note into `storage`.
+///
+/// Shared by the `import_obsidian_vault` command and tests. Emits an
+/// `import-progress` event every 10 files when `app` is given.
+fn run_vault_import(
+    storage: &mut Storage,
+    app: Option<&AppHandle>,
+    root: &Path,
+    folder: Option<&str>,
+) -> ImportVaultResponse {
+    let mut files = Vec::new();
+    collect_markdown_files(root, &mut files, 0);
+    let total = files.len();
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (i, path) in files.iter().enumerate() {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        // Destination path inside the Cerebro vault (optional folder prefix).
+        let dest = match folder.map(str::trim).filter(|f| !f.is_empty()) {
+            Some(prefix) => format!("{}/{}", prefix.trim_matches('/'), rel),
+            None => rel.clone(),
+        };
+
+        // Obsidian convention: note title = filename without extension.
+        let title = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                failed += 1;
+                if errors.len() < 10 {
+                    errors.push(format!("{}: {}", rel, e));
+                }
+                continue;
+            }
+        };
+
+        if storage.note_exists(&dest) {
+            skipped += 1;
+        } else {
+            let tags = vec!["import/obsidian".to_string(), "imported".to_string()];
+            match storage.create_note(&title, &content, Some(&dest), Some(tags)) {
+                Ok(_) => imported += 1,
+                Err(e) => {
+                    failed += 1;
+                    if errors.len() < 10 {
+                        errors.push(format!("{}: {}", rel, e));
+                    }
+                }
+            }
+        }
+
+        // Progress event every 10 files (and on the last one) for the UI.
+        if let Some(handle) = app {
+            if (i + 1) % 10 == 0 || i + 1 == total {
+                let _ = handle.emit(
+                    "import-progress",
+                    serde_json::json!({ "done": i + 1, "total": total }),
+                );
+            }
+        }
+    }
+
+    ImportVaultResponse {
+        imported,
+        skipped,
+        failed,
+        total_found: total,
+        errors,
+    }
+}
+
+/// Import an Obsidian vault (a directory of Markdown notes) into the open vault.
+///
+/// Walks the directory recursively, skipping `.obsidian`/`.trash`/hidden dirs,
+/// and imports every `.md` file preserving its relative folder structure under
+/// the optional `folder` prefix. Existing notes at the same path are skipped.
+/// Obsidian frontmatter tags are merged automatically by the parser; note
+/// titles follow the Obsidian convention (filename without extension).
+#[tauri::command]
+async fn import_obsidian_vault(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vault_path: String,
+    folder: Option<String>,
+) -> Result<ImportVaultResponse, String> {
+    let root = PathBuf::from(&vault_path);
+    if !root.exists() {
+        return Err(format!("Directory not found: {}", vault_path));
+    }
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {}", vault_path));
+    }
+
+    let mut guard = state.storage.lock().map_err(|e| e.to_string())?;
+    let storage = guard.as_mut().ok_or("No vault open — open a vault first")?;
+
+    Ok(run_vault_import(storage, Some(&app), &root, folder.as_deref()))
+}
+
 // ── Transclusion Resolution ──────────────────────────────────
 
 #[tauri::command]
@@ -1069,6 +1221,7 @@ pub fn run() {
             read_attachment_text,
             import_document,
             import_documents,
+            import_obsidian_vault,
             start_watcher,
             stop_watcher,
             list_templates,
@@ -1084,4 +1237,128 @@ pub fn run() {
 
 fn main() {
     run();
+}
+
+// ── Tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a fake Obsidian vault on disk:
+    ///   vault/
+    ///     note.md
+    ///     projects/plan.md
+    ///     .obsidian/config.json      (skipped)
+    ///     .trash/old.md              (skipped)
+    ///     attachments/img.txt        (skipped — not .md)
+    #[test]
+    fn test_collect_markdown_files_skips_obsidian_metadata() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        std::fs::create_dir_all(root.join("projects")).unwrap();
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(root.join(".trash")).unwrap();
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+
+        std::fs::write(root.join("note.md"), "# Root").unwrap();
+        std::fs::write(root.join("projects/plan.md"), "# Plan").unwrap();
+        std::fs::write(root.join(".obsidian/config.json"), "{}").unwrap();
+        std::fs::write(root.join(".trash/old.md"), "# Old").unwrap();
+        std::fs::write(root.join("attachments/img.txt"), "data").unwrap();
+
+        let mut files = Vec::new();
+        collect_markdown_files(root, &mut files, 0);
+
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["note.md".to_string(), "projects/plan.md".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_markdown_files_missing_dir_is_empty() {
+        let mut files = Vec::new();
+        collect_markdown_files(Path::new("/nonexistent/vault/xyz"), &mut files, 0);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_collect_markdown_files_is_case_insensitive_on_ext() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("UPPER.MD"), "# Upper").unwrap();
+
+        let mut files = Vec::new();
+        collect_markdown_files(tmp.path(), &mut files, 0);
+        assert_eq!(files.len(), 1);
+    }
+
+    /// Full import pipeline: fake Obsidian vault → Storage, verifying folder
+    /// structure, folder prefix, frontmatter tag merge, and skip-on-reimport.
+    #[test]
+    fn test_run_vault_import_end_to_end() {
+        use cerebro::config::profile::ProfileConfig;
+
+        // Fake Obsidian vault
+        let vault_tmp = tempfile::tempdir().expect("tempdir");
+        let root = vault_tmp.path();
+        std::fs::create_dir_all(root.join("projects")).unwrap();
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::write(
+            root.join("Inbox.md"),
+            "# Inbox\n\nSee [[plan]] for details.\n\n#inline-tag",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("projects/plan.md"),
+            "---\ntags: [work, rust]\n---\n# Plan\n\nBody.",
+        )
+        .unwrap();
+        std::fs::write(root.join(".obsidian/app.json"), "{}").unwrap();
+
+        // Cerebro vault storage
+        let target_tmp = tempfile::tempdir().expect("tempdir");
+        let profile_dir = target_tmp.path().join("vault");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let pc = ProfileConfig::new("vault");
+        pc.save_to(&profile_dir).unwrap();
+        let mut storage = Storage::open(&profile_dir, &pc).unwrap();
+
+        // First import — 2 notes, metadata dir skipped
+        let resp = run_vault_import(&mut storage, None, root, Some("Obsidian"));
+        assert_eq!(resp.total_found, 2, "should find exactly the 2 .md files");
+        assert_eq!(resp.imported, 2);
+        assert_eq!(resp.skipped, 0);
+        assert_eq!(resp.failed, 0);
+        assert!(resp.errors.is_empty());
+
+        // Folder structure preserved under the prefix
+        assert!(storage.note_exists("Obsidian/Inbox.md"));
+        assert!(storage.note_exists("Obsidian/projects/plan.md"));
+
+        // Frontmatter tags merged, import tags applied, title = filename stem
+        let plan = storage.read_note("Obsidian/projects/plan.md").unwrap();
+        assert_eq!(plan.note.title, "plan");
+        assert!(plan.note.tags.contains(&"work".to_string()));
+        assert!(plan.note.tags.contains(&"rust".to_string()));
+        assert!(plan.note.tags.contains(&"import/obsidian".to_string()));
+
+        // Inline tags picked up too
+        let inbox = storage.read_note("Obsidian/Inbox.md").unwrap();
+        assert!(inbox.note.tags.contains(&"inline-tag".to_string()));
+
+        // Second import — all notes skipped (already exist at destination)
+        let resp2 = run_vault_import(&mut storage, None, root, Some("Obsidian"));
+        assert_eq!(resp2.imported, 0);
+        assert_eq!(resp2.skipped, 2);
+
+        // Re-import without the prefix lands at fresh paths (no clash)
+        let resp3 = run_vault_import(&mut storage, None, root, None);
+        assert_eq!(resp3.imported, 2);
+        assert!(storage.note_exists("Inbox.md"));
+    }
 }
