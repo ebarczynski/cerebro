@@ -138,35 +138,45 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cat > NOTES.md <<EOF
-          ## Cerebro v${VERSION}
+          # Cerebro v${VERSION}
 
-          Local-first personal knowledge base — CLI + desktop GUI (Tauri 2).
+          **Cerebro** is a local-first personal knowledge base that grows the graph
+          for you: write Markdown, link with \`[[wikilinks]]\`, and let keyword
+          analysis surface connections you didn't notice. Plain files, no cloud.
 
-          ### Downloads
+          **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search
+          (FTS5) · automatic keyword links · Obsidian-style knowledge graph ·
+          document import (PDF/DOCX/XLSX/PPTX) · 🔒/💼 vaults with recents ·
+          MCP server · Confluence connector · CLI.
 
-          **macOS (Apple Silicon)**
-          - \`Cerebro_${VERSION}_aarch64.dmg\` — drag to /Applications
-          - \`Cerebro-${VERSION}-macos-aarch64.app.tar.gz\` — portable app bundle
-          - \`cerebro-${VERSION}-macos-aarch64.tar.gz\` — CLI binary
+          ## 🍎 macOS (Apple Silicon)
 
-          **Linux (x86_64)**
-          - \`Cerebro_${VERSION}_amd64.deb\` — Debian/Ubuntu package
-          - \`cerebro-${VERSION}-linux-x86_64.tar.gz\` — CLI binary
+          | File | What it is |
+          |---|---|
+          | \`Cerebro_${VERSION}_aarch64.dmg\` | Installer — drag to /Applications |
+          | \`Cerebro-${VERSION}-macos-aarch64.app.tar.gz\` | Portable app bundle |
+          | \`cerebro-${VERSION}-macos-aarch64.tar.gz\` | CLI binary (arm64) |
 
-          All artifacts have \`.sha256\` checksums alongside them.
+          > Unsigned build — Gatekeeper warns on first launch. Right-click → Open,
+          > or \`xattr -cr /Applications/Cerebro.app\`
 
-          ### macOS first-launch note
-          The app is unsigned — Gatekeeper will warn on first launch.
-          Right-click the app → Open, or clear the quarantine flag:
-          \`xattr -cr /Applications/Cerebro.app\`
+          ## 🐧 Linux (x86_64)
 
-          ### Linux GUI note
-          The .deb pulls in WebKitGTK dependencies on install. For other
-          distros, build from source (see README).
+          | File | What it is |
+          |---|---|
+          | \`Cerebro_${VERSION}_amd64.deb\` | Debian/Ubuntu package (pulls WebKitGTK) |
+          | \`cerebro-${VERSION}-linux-x86_64.tar.gz\` | CLI binary (x86_64) |
+
+          Other distros: build from source (GUI needs WebKitGTK 4.1 dev packages).
+
+          All CLI archives ship with \`.sha256\` checksums.
+
+          *Built automatically by GitHub Actions on ubuntu-latest (x86_64) and
+          macos-14 (M1).*
           EOF
 
       - name: Create GitHub release
-        uses: softprops/action-ghrelease@v2
+        uses: softprops/action-gh-release@v2
         with:
           name: "Cerebro v${{ github.ref_name }}"
           body_path: NOTES.md
