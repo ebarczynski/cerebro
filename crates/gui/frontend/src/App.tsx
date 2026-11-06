@@ -9,6 +9,7 @@ import StatusBar, { KindBadge, formatRelativeTime, VAULT_KIND_META } from "./com
 import ImportDropZone, { type ImportResponse } from "./components/ImportDropZone";
 import ImportObsidianModal, { type VaultImportSummary } from "./components/ImportObsidianModal";
 import ShortcutsModal from "./components/ShortcutsModal";
+import Logo from "./components/Logo";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -601,7 +602,9 @@ function WelcomeScreen({
   return (
     <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] overflow-auto">
       <div className="text-center max-w-md py-8">
-        <div className="text-6xl mb-6">🧠</div>
+        <div className="flex justify-center mb-6">
+          <Logo size={96} tile />
+        </div>
         <h1 className="text-3xl font-bold text-white mb-3">Cerebro</h1>
         <p className="text-[#8888a0] mb-8 leading-relaxed">
           Your personal knowledge base. Store notes, connect ideas, and explore your knowledge graph.
@@ -1685,7 +1688,10 @@ export default function App() {
               <path d="M3 12h18M3 6h18M3 18h18" />
             </svg>
           </button>
-          <span className="text-sm font-semibold text-white ml-1">🧠 Cerebro</span>
+          <span className="flex items-center gap-1.5 ml-1">
+            <Logo size={20} />
+            <span className="text-sm font-semibold text-white">Cerebro</span>
+          </span>
           {activeProfile && (
             <span className="text-xs text-[#8888a0] bg-[#1a1a25] px-2 py-0.5 rounded-full ml-2">
               {activeProfile.display_name}

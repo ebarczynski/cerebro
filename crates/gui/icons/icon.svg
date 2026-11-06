@@ -1,0 +1,41 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="256" y1="64" x2="256" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#0b0b12"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="150" y1="140" x2="380" y2="370" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b0baff"/>
+      <stop offset="0.55" stop-color="#8a90fa"/>
+      <stop offset="1" stop-color="#6d6ff5"/>
+    </linearGradient>
+    <radialGradient id="ambient" cx="256" cy="244" r="195" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="448" height="448" rx="100" fill="url(#bg)"/>
+  <rect x="34" y="34" width="444" height="444" rx="98" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+  <rect x="32" y="32" width="448" height="448" rx="100" fill="url(#ambient)"/>
+
+  <g transform="translate(256,244) scale(1.1) translate(-256,-252)">
+    <g stroke="url(#mark)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <g stroke="#6366f1" opacity="0.5" filter="url(#glow)" stroke-width="14">
+        <path d="M256,148 C180,148 128,196 128,258 C128,314 170,350 224,352 C240,353 252,351 256,348 C260,351 272,353 288,352 C342,350 384,314 384,258 C384,196 332,148 256,148 Z"/>
+        <path d="M256,160 L256,204"/>
+        <path d="M198,212 C178,234 190,258 170,284"/>
+        <path d="M316,208 L316,244 L350,278"/>
+      </g>
+      <path d="M256,148 C180,148 128,196 128,258 C128,314 170,350 224,352 C240,353 252,351 256,348 C260,351 272,353 288,352 C342,350 384,314 384,258 C384,196 332,148 256,148 Z"/>
+      <path d="M256,160 L256,204" stroke-opacity="0.78" stroke-width="11"/>
+      <path d="M198,212 C178,234 190,258 170,284" stroke-opacity="0.85"/>
+      <path d="M316,208 L316,244 L350,278"/>
+    </g>
+    <circle cx="316" cy="208" r="9.5" fill="#a5b4fc"/>
+    <circle cx="350" cy="278" r="12" fill="#818cf8"/>
+  </g>
+</svg>
