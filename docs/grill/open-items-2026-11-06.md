@@ -1,7 +1,11 @@
 # Open Items — updated after grill round 1 (2026-11-06)
 
-Round 1 verdicts are recorded as ADRs 0003–0005. This file tracks what is
-still open. Supersedes the pre-round version of this file.
+Status: **AWAITING GO.** Round-1 verdicts are decided and recorded (ADRs
+0003–0005). The closing GO round (execute Phase A build queue) ended
+unanswered (timeout) on 2026-11-06 — per grill rules this is NOT a GO; no
+code changes may be executed from this state alone. Any owner message saying
+"go" (with or without qualification, e.g. "go but pause after item 1")
+counts as the GO and resumes execution from the queue below.
 
 ## Decided (see ADRs)
 
