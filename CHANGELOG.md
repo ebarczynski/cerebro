@@ -3,6 +3,16 @@
 All notable changes to Cerebro are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.4.1] — 2026-11-06
+
+### Changed
+- **New app icon** — minimal brain-circuit mark (organic fold on the left
+  hemisphere, circuit trace on the right) in the app's indigo gradient on a
+  dark squircle. Replaces the plain circle everywhere: macOS icns, Windows
+  ico, the full PNG set, the in-app top bar and welcome screen (new `Logo`
+  component), and the webview favicon. Design source:
+  `crates/gui/icons/icon.svg`.
+
 ## [0.4.0] — 2026-11-05
 
 ### Added
@@ -60,5 +70,6 @@ All notable changes to Cerebro are documented here. Format loosely follows
 - Document import: PDF, PPTX, DOCX, DOC, ODS, XLSX, XLS, ODT, HTML →
   Markdown, via toolbar and drag-and-drop.
 
+[0.4.1]: https://github.com/ebarczynski/cerebro/releases/tag/v0.4.1
 [0.4.0]: https://github.com/ebarczynski/cerebro/releases/tag/v0.4.0
 [0.3.1]: https://github.com/ebarczynski/cerebro/releases/tag/v0.3.1

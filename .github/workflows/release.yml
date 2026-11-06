@@ -170,6 +170,11 @@ jobs:
           for you: write Markdown, link with \`[[wikilinks]]\`, and let keyword
           analysis surface connections you didn't notice. Plain files, no cloud.
 
+          ## 🆕 New in this release
+
+          - 🎨 **New app icon** — minimal brain-circuit mark across macOS,
+            Windows and Linux, plus the in-app top bar, welcome screen and favicon.
+
           **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search
           (FTS5) · automatic keyword links · Obsidian-style knowledge graph ·
           💠 Obsidian vault import (folder structure, frontmatter tags, wikilinks) ·
