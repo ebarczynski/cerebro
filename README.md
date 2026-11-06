@@ -1,34 +1,66 @@
-# 🧠 Cerebro
+<p align="center">
+  <img src="crates/gui/icons/icon.png" width="120" alt="Cerebro logo — a brain silhouette that is half organic folds, half circuit trace, in indigo on a dark tile" />
+</p>
 
-A fast, secure, local-first personal knowledge base with dual-profile vaults, 
-MCP integration for AI coding tools, Knowledge Palace connector, and Confluence publishing.
+<h1 align="center">Cerebro</h1>
 
-Built with **Rust 1.96.0** (edition 2024), **Tauri 2.0**, **React 19**, 
-**CodeMirror 6**, and **TailwindCSS v4**.
+<p align="center">
+  A fast, local-first personal knowledge base that grows the graph for you:
+  write Markdown, link with <code>[[wikilinks]]</code>, and let keyword analysis
+  surface the connections you didn't notice.
+</p>
+
+<p align="center">
+  <a href="https://github.com/ebarczynski/cerebro/actions/workflows/ci.yml"><img src="https://github.com/ebarczynski/cerebro/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="https://github.com/ebarczynski/cerebro/actions/workflows/release.yml"><img src="https://github.com/ebarczynski/cerebro/actions/workflows/release.yml/badge.svg" alt="Release status" /></a>
+  <a href="https://github.com/ebarczynski/cerebro/releases/latest"><img src="https://img.shields.io/github/v/release/ebarczynski/cerebro?display_name=tag&label=latest" alt="Latest release" /></a>
+  <a href="https://github.com/ebarczynski/cerebro/releases"><img src="https://img.shields.io/github/downloads/ebarczynski/cerebro/total?color=8a90fa&label=downloads" alt="Downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/ebarczynski/cerebro" alt="License: MIT" /></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust" alt="Rust 1.96+" /></a>
+</p>
+
+---
 
 ## Features
 
-- **Dual-profile vaults** — separate personal and professional knowledge domains
 - **Markdown-native** — `.md` files are the source of truth, with YAML frontmatter
 - **Obsidian vault import** — import an entire Obsidian vault in one step:
   folder structure, YAML frontmatter tags, inline `#tags` and `[[wikilinks]]`
   are all preserved (`.obsidian` config is skipped, duplicates detected)
 - **Document import** — drag & drop PDF, DOCX, PPTX, XLSX/ODS, HTML, Markdown,
   JSON or source files; each converts to a Markdown note
+- **Dual-profile vaults** — separate personal and professional knowledge domains
 - **Wikilinks** — `[[Note Name]]` with `#heading` and `|alias` support
 - **Bidirectional links** — automatic backlink and forward-link tracking
 - **Full-text search** — SQLite FTS5 with Porter stemmer
 - **Tag management** — unified frontmatter `tags:` + inline `#tags`
 - **Daily notes** — `/Daily/YYYY-MM-DD.md` auto-generated
-- **Knowledge graph** — interactive D3.js force-directed graph visualization
+- **Knowledge graph** — interactive D3.js force-directed graph visualization,
+  with automatic keyword-based links between notes
 - **Keyboard shortcuts help** — press `?` (or the **?** toolbar button) anytime
 - **Knowledge Palace connector** — semantic/RAG search via pgvector at `localhost:8080`
 - **Confluence publisher** — markdown → Confluence Storage Format → REST API
 - **Git sync** — automatic version control for vaults
 - **MCP server** — 10 tools via JSON-RPC over stdio for Copilot, Hermes, and other MCP clients
-- **Tauri 2.0 GUI** — native desktop app (Linux + macOS), dark theme, split-pane layout
+- **Tauri 2.0 GUI** — native desktop app (macOS + Linux), dark theme, split-pane layout
 - **CLI** — full command-line interface for scripting and automation
 - **Encryption-ready** — AES-256-GCM profile encryption support
+
+## Installation
+
+Prebuilt binaries from [Releases](https://github.com/ebarczynski/cerebro/releases/latest):
+
+| Platform | Get it | Requirements |
+|---|---|---|
+| 🍎 macOS (Apple Silicon) | `Cerebro_<ver>_aarch64.dmg` — drag to `/Applications` | macOS 26 (Tahoe) or newer |
+| 🐧 Linux (x86_64) | `Cerebro_<ver>_amd64.deb` — `sudo dpkg -i` | WebKitGTK 4.1 (pulled in via apt) |
+| CLI (both platforms) | `cerebro-<ver>-<platform>.tar.gz` | any; ships with `.sha256` checksums |
+
+> The macOS build is ad-hoc signed (no paid Apple certificate), so Gatekeeper
+> shows one warning on first launch: right-click → **Open**, or run
+> `xattr -cr /Applications/Cerebro.app`.
+
+Or build from source — see [Quick Start](#quick-start).
 
 ## Architecture
 
@@ -38,6 +70,7 @@ cerebro/
 │   ├── config/                   # TOML config, profile management
 │   ├── storage/                  # SQLite CRUD, FTS5, migrations
 │   ├── parser/                   # Markdown parsing, frontmatter, wikilinks
+│   ├── import/                   # PDF/PPTX/DOCX/XLSX/ODT/HTML → Markdown
 │   ├── links/                    # petgraph bidirectional link graph
 │   ├── search/                   # Full-text search wrapper
 │   ├── mcp/                      # MCP server (JSON-RPC 2.0 over stdio)
@@ -47,15 +80,16 @@ cerebro/
 │   └── cli/                      # clap CLI interface
 ├── crates/gui/                   # Tauri 2.0 GUI application
 │   ├── src/main.rs               # 40 Tauri commands wired to core lib
+│   ├── icons/icon.svg            # Logo design source (brain-circuit mark)
 │   ├── frontend/                 # React 19 + TypeScript frontend
 │   │   ├── src/
 │   │   │   ├── App.tsx           # Main app with graph view, preview, welcome
-│   │   │   └── components/       # Sidebar, Editor, Search, StatusBar,
+│   │   │   └── components/       # Sidebar, Editor, Search, StatusBar, Logo,
 │   │   │                         # ImportDropZone, ImportObsidianModal, ShortcutsModal
 │   │   └── index.css             # TailwindCSS v4 dark theme
 │   └── tauri.conf.json           # Tauri configuration
 ├── migrations/                   # SQLite schema migrations
-└── tests/                        # Integration tests (68 total incl. unit tests)
+└── tests/                        # Integration tests (plus unit tests in each crate)
 ```
 
 ## Quick Start
@@ -82,10 +116,7 @@ cerebro backlinks "My First Note"
 cerebro mcp
 ```
 
-### GUI
-
-**macOS:** requires macOS 26 (Tahoe) or newer — grab the signed DMG from
-[Releases](https://github.com/ebarczynski/cerebro/releases/latest).
+### GUI from source
 
 ```bash
 # Prerequisites (Linux)
@@ -190,7 +221,7 @@ encryption = false
 # Run all tests
 cargo test
 
-# Run with clippy
+# Lint
 cargo clippy -- -D warnings
 
 # Build core library only
@@ -202,6 +233,10 @@ cargo build --release -p cerebro-gui
 # Frontend development
 cd crates/gui/frontend
 npm run dev
+
+# Regenerate app icons after editing the logo source
+cd crates/gui
+frontend/node_modules/.bin/tauri icon icons/icon.png
 ```
 
 ## Tech Stack
@@ -218,11 +253,10 @@ npm run dev
 | Styling | TailwindCSS v4 |
 | Graph viz | D3.js force-directed |
 | CLI | clap 4 |
-| Search | rusqlite FTS5 |
 | HTTP client | reqwest (KP connector) |
 | MCP | JSON-RPC 2.0 over stdio |
 | Build | cargo + Vite |
 
 ## License
 
-MIT
+[MIT](LICENSE) — see [LICENSE](LICENSE).
