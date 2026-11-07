@@ -209,7 +209,8 @@ cerebro vault status work         # protection status
 cerebro vault decrypt work        # removes protection (needs passphrase)
 ```
 
-- Business vaults: protection recommended (prompted at creation).
+- Business vaults: protection recommended — enable right after creation with
+  `cerebro vault encrypt <name>` (a create-time prompt is a planned follow-up).
 - Personal/Project vaults: plaintext by default — encryption never gets in
   your way unless you turn it on.
 - Unlock lasts for the session; relock happens on system sleep or manually

@@ -839,9 +839,13 @@ impl Storage {
             .join("backups")
             .join(format!("{}-{}", self.profile_name, ts));
         std::fs::create_dir_all(&dest)?;
-        let db = profile_dir.join("db.sqlite");
-        if db.exists() {
-            std::fs::copy(&db, dest.join("db.sqlite"))?;
+        // Copy db + WAL + SHM: an open connection keeps uncheckpointed
+        // writes in the WAL — copying only db.sqlite can miss recent notes.
+        for suffix in ["", "-wal", "-shm"] {
+            let db = profile_dir.join(format!("db.sqlite{suffix}"));
+            if db.exists() {
+                std::fs::copy(&db, dest.join(format!("db.sqlite{suffix}")))?;
+            }
         }
         let notes_backup = dest.join("notes");
         copy_dir_recursive(&self.notes_dir, &notes_backup)?;

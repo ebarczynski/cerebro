@@ -444,21 +444,6 @@ fn handle_request(
             let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or_default();
 
-            // Unknown tools are a PROTOCOL-level error (-32602), not a
-            // success-shaped text result: clients must be able to tell a
-            // missing tool from a failed call (grill finding F9/F17).
-            if !cerebro_tools().iter().any(|t| t.name == tool_name) {
-                return Some(JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: request.id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Unknown tool: {}", tool_name),
-                    }),
-                });
-            }
-
             // Sandbox: resolve the effective profile + access level, enforce,
             // audit. Locked/hidden vaults and policy denials are first-class
             // isError results so clients can react (ADR 0007).
@@ -472,6 +457,24 @@ fn handle_request(
                         .clone()
                         .unwrap_or_else(|| config.default_profile.clone())
                 });
+
+            // Unknown tools are a PROTOCOL-level error (-32602), not a
+            // success-shaped text result: clients must be able to tell a
+            // missing tool from a failed call (grill finding F9/F17).
+            // Still audited — every call leaves a trace (ADR 0007).
+            if !cerebro_tools().iter().any(|t| t.name == tool_name) {
+                audit_line(session, tool_name, &target_profile, "deny", "unknown tool");
+                return Some(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Unknown tool: {}", tool_name),
+                    }),
+                });
+            }
+
             let access = access_for(session, config, &target_profile);
             let tool_in_deny_list = config
                 .mcp

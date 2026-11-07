@@ -47,6 +47,17 @@ construction; relocking shrinks, never eliminates, that window.
 - A forgotten passphrase with no cached Keychain copy means permanent
   loss of that vault's contents. The enable-time flow must state this and
   the recovery stance (pending round 2).
+- **Known limitation (documented, deferred):** note ciphertext does not
+  bind the file path as AEAD associated data. An attacker with disk access
+  can relocate a ciphertext file to another note's path and it will still
+  decrypt — content stays authenticated and unreadable, but its placement
+  is not cryptographically bound. Path-AAD is a candidate for a format
+  version bump; deliberately deferred per the simplicity budget.
+- **Crash safety:** migrations take a full pre-flight backup (db + WAL +
+  notes) under `~/.cerebro/backups/`. A crash mid-migration leaves the
+  config flag flipped and files partially converted; reads tolerate the
+  mixed state (plaintext-in-protected-vault passthrough), and the backup
+  is the recovery path.
 
 ---
 
