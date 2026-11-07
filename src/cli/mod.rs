@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 use crate::config::app::Config;
 use crate::config::profile::ProfileConfig;
+use crate::crypto::VaultKey;
 use crate::storage::Storage;
 
 #[derive(Parser)]
@@ -103,12 +104,27 @@ pub enum Commands {
     },
 
     /// Start MCP server (stdio)
-    Mcp,
+    Mcp {
+        /// Access override per session: <profile>:<none|read|write> (repeatable)
+        #[arg(long = "scope", value_name = "PROFILE:LEVEL")]
+        scopes: Vec<String>,
+
+        /// Unlock a protected vault for this session (repeatable; prompts
+        /// for each passphrase before serving)
+        #[arg(long = "unlock", value_name = "PROFILE")]
+        unlock: Vec<String>,
+    },
 
     /// Knowledge Palace semantic search
     Kp {
         #[command(subcommand)]
         action: KpCommands,
+    },
+
+    /// Vault protection (encrypt/decrypt — ADR 0006)
+    Vault {
+        #[command(subcommand)]
+        action: VaultCommands,
     },
 
     /// Sync vault with Git remote
@@ -214,6 +230,29 @@ pub enum KpCommands {
     Health,
 }
 
+#[derive(Subcommand)]
+pub enum VaultCommands {
+    /// Protect a vault: all notes + database encrypted at rest (ADR 0006)
+    Encrypt {
+        /// Vault (profile) name
+        name: String,
+        /// Also cache the unlock key in the OS keychain (macOS Keychain;
+        /// convenience only — the passphrase remains the credential)
+        #[arg(long)]
+        keychain: bool,
+    },
+    /// Remove protection: decrypt all notes + database
+    Decrypt {
+        /// Vault (profile) name
+        name: String,
+    },
+    /// Show protection status
+    Status {
+        /// Vault (profile) name
+        name: String,
+    },
+}
+
 // ── CLI Runner ───────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -277,11 +316,24 @@ pub fn run(cli: Cli) -> Result<()> {
             let mut storage = open_storage(&config, profile_name)?;
             cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
-        Commands::Mcp => crate::mcp::McpServer::run(config),
+        Commands::Mcp { scopes, unlock } => {
+            let mut opts = crate::mcp::McpStartOpts::default();
+            for raw in &scopes {
+                let (name, level) = raw.rsplit_once(':').ok_or_else(|| {
+                    anyhow!("invalid --scope '{raw}': expected <profile>:<none|read|write>")
+                })?;
+                let level = crate::config::app::McpAccess::parse(level)
+                    .ok_or_else(|| anyhow!("invalid access level '{level}' in --scope '{raw}'"))?;
+                opts.scopes.push((name.to_string(), level));
+            }
+            opts.unlock = unlock;
+            crate::mcp::McpServer::run(config, opts)
+        }
         Commands::Kp { action } => {
             let storage = open_storage(&config, profile_name)?;
             cmd_kp(&config, &storage, action)
         }
+        Commands::Vault { action } => cmd_vault(&config, action),
         Commands::Sync { action } => {
             cmd_sync(&config, profile_name, action)
         }
@@ -698,10 +750,117 @@ fn cmd_sync(config: &Config, profile_name: &str, action: SyncCommands) -> Result
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+/// Unlock resolution for a protected vault (ADR 0006): try the keychain
+/// convenience cache first, then prompt for the passphrase. Wrong
+/// passphrase = clear error, no retry loop (friction budget).
+fn resolve_vault_key(
+    profile_name: &str,
+    profile_config: &ProfileConfig,
+) -> Result<VaultKey> {
+    if let Some(service) = &profile_config.protection.keychain_service {
+        if let Ok(Some(key)) = VaultKey::from_keychain(service) {
+            return Ok(key);
+        }
+    }
+    let kdf = profile_config
+        .protection
+        .kdf
+        .as_ref()
+        .ok_or_else(|| anyhow!("vault config missing KDF parameters"))?;
+    let wrapped = profile_config
+        .protection
+        .wrapped_key_b64
+        .as_deref()
+        .ok_or_else(|| anyhow!("vault config missing wrapped master key"))?;
+    let passphrase = rpassword::prompt_password(format!(
+        "Passphrase for vault '{}': ",
+        profile_name
+    ))?;
+    VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf)
+        .map_err(|_| anyhow!("wrong passphrase for vault '{}'", profile_name))
+}
+
 fn open_storage(config: &Config, profile_name: &str) -> Result<Storage> {
     let profile_dir = config.profiles_dir.join(profile_name);
     let profile_config = ProfileConfig::load_or_default(&profile_dir, profile_name)?;
-    Storage::open(&profile_dir, &profile_config)
+    if profile_config.encryption {
+        let key = resolve_vault_key(profile_name, &profile_config)?;
+        Storage::open_with_key(&profile_dir, &profile_config, Some(&key))
+    } else {
+        Storage::open(&profile_dir, &profile_config)
+    }
+}
+
+fn cmd_vault(config: &Config, action: VaultCommands) -> Result<()> {
+    match action {
+        VaultCommands::Encrypt { name, keychain } => {
+            let profile_dir = config.profiles_dir.join(&name);
+            if !profile_dir.exists() {
+                return Err(anyhow!("vault '{}' does not exist", name));
+            }
+            let mut cfg = ProfileConfig::load_or_default(&profile_dir, &name)?;
+            println!(
+                "⚠ Protecting '{}' encrypts ALL notes and its database at rest.",
+                name
+            );
+            println!("  WITHOUT the passphrase the data is UNRECOVERABLE — there is no reset, no recovery code.");
+            let passphrase = rpassword::prompt_password("Choose passphrase: ")?;
+            let confirm = rpassword::prompt_password("Confirm passphrase: ")?;
+            if passphrase != confirm {
+                return Err(anyhow!("passphrases do not match"));
+            }
+            Storage::enable_protection(&profile_dir, &mut cfg, &passphrase)?;
+            if keychain {
+                // Re-open is unnecessary: the key is deterministically derivable
+                // from the config we just wrote — unwrap it to cache it.
+                let kdf = cfg.protection.kdf.as_ref().unwrap();
+                let wrapped = cfg.protection.wrapped_key_b64.as_deref().unwrap();
+                let key = VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf)?;
+                let service = format!("cerebro.vault.{}", name);
+                key.cache_in_keychain(&service)?;
+                cfg.protection.keychain_service = Some(service);
+                cfg.save_to(&profile_dir)?;
+                println!("  Keychain convenience cache enabled.");
+            }
+            println!("✓ Vault '{}' is now protected (kind: {:?})", name, cfg.kind);
+        }
+        VaultCommands::Decrypt { name } => {
+            let profile_dir = config.profiles_dir.join(&name);
+            if !profile_dir.exists() {
+                return Err(anyhow!("vault '{}' does not exist", name));
+            }
+            let mut cfg = ProfileConfig::load_or_default(&profile_dir, &name)?;
+            let passphrase = rpassword::prompt_password(format!(
+                "Passphrase for vault '{}': ",
+                name
+            ))?;
+            Storage::disable_protection(&profile_dir, &mut cfg, &passphrase)?;
+            println!("✓ Vault '{}' is no longer protected", name);
+        }
+        VaultCommands::Status { name } => {
+            let profile_dir = config.profiles_dir.join(&name);
+            let cfg = ProfileConfig::load_or_default(&profile_dir, &name)?;
+            println!("Vault '{}':", name);
+            println!("  Kind:       {:?}", cfg.kind);
+            println!(
+                "  Protection: {}",
+                if cfg.encryption {
+                    format!(
+                        "ENABLED (kdf: Argon2id m={} t={} p={})",
+                        cfg.protection.kdf.as_ref().map(|k| k.m_cost).unwrap_or(0),
+                        cfg.protection.kdf.as_ref().map(|k| k.t_cost).unwrap_or(0),
+                        cfg.protection.kdf.as_ref().map(|k| k.p_cost).unwrap_or(0)
+                    )
+                } else {
+                    "off (plaintext)".to_string()
+                }
+            );
+            if let Some(service) = &cfg.protection.keychain_service {
+                println!("  Keychain:   {} (convenience cache)", service);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn edit_in_editor(content: &str, editor: &str) -> Result<String> {

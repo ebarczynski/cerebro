@@ -2,7 +2,13 @@
 //!
 //! Exposes note CRUD, search, graph, and Knowledge Palace tools
 //! via JSON-RPC 2.0 over stdio.
+//!
+//! Sandbox (ADR 0007): per-profile access policies (`none|read|write`),
+//! CLI `--scope` override, an append-only JSONL audit journal, and
+//! locked-vault invisibility — a protected vault that was not unlocked at
+//! server start is denied to every tool.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -10,8 +16,12 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::config::app::Config;
+use crate::config::app::{Config, McpAccess};
+use crate::crypto::VaultKey;
 use crate::storage::Storage;
+
+/// Tools that mutate a vault — require `write` access.
+const WRITE_TOOLS: &[&str] = &["cerebro_create_note", "cerebro_update_note", "cerebro_delete_note"];
 
 // ── JSON-RPC Types ───────────────────────────────────────────────
 
@@ -190,9 +200,153 @@ pub struct McpServer;
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
 
+/// Session-scoped sandbox state (ADR 0007): unlocked vault keys, CLI scope
+/// overrides, and the audit journal path.
+pub struct McpSession {
+    pub keys: HashMap<String, VaultKey>,
+    pub scopes: HashMap<String, McpAccess>,
+    pub audit_path: PathBuf,
+}
+
+/// CLI options for starting the MCP server.
+#[derive(Debug, Default, Clone)]
+pub struct McpStartOpts {
+    /// `--scope profile:level` overrides (highest precedence).
+    pub scopes: Vec<(String, McpAccess)>,
+    /// `--unlock profile` — prompt for the passphrase at server start so the
+    /// session can open that protected vault. Unprompted protected vaults
+    /// stay locked and invisible.
+    pub unlock: Vec<String>,
+}
+
+/// Append one audit line. Audit failures are logged, never fatal: an
+/// unwritable audit file must not take the server down mid-session.
+fn audit_line(session: &McpSession, tool: &str, profile: &str, decision: &str, reason: &str) {
+    let line = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "tool": tool,
+        "profile": profile,
+        "decision": decision,
+        "reason": reason,
+    });
+    let result = (|| -> std::io::Result<()> {
+        if let Some(dir) = session.audit_path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&session.audit_path)?;
+        writeln!(f, "{line}")
+    })();
+    if let Err(e) = result {
+        tracing::warn!("audit write failed: {e}");
+    }
+}
+
+/// Resolve the effective access level for a profile: CLI scope override →
+/// config policy → default (active profile read, others none).
+fn access_for(session: &McpSession, config: &Config, profile: &str) -> McpAccess {
+    if let Some(level) = session.scopes.get(profile) {
+        return *level;
+    }
+    if let Some(policy) = config.mcp.profiles.get(profile) {
+        if let Some(level) = McpAccess::parse(&policy.allow) {
+            return level;
+        }
+    }
+    let active = config
+        .active_profile
+        .as_deref()
+        .unwrap_or(&config.default_profile);
+    if profile == active {
+        McpAccess::Read
+    } else {
+        McpAccess::None
+    }
+}
+
+/// Open the target profile's storage under the sandbox rules. Protected
+/// vaults need a session key (from `--unlock` at start) — otherwise they are
+/// invisible (ADR 0006/0007: locked means invisible, never a prompt).
+fn open_sandboxed(
+    session: &McpSession,
+    config: &Config,
+    profile: Option<&str>,
+) -> std::result::Result<Storage, String> {
+    let profile_name = profile
+        .or(config.active_profile.as_deref())
+        .unwrap_or(&config.default_profile)
+        .to_string();
+    let profile_dir = config.profiles_dir.join(&profile_name);
+    let profile_config =
+        crate::config::profile::ProfileConfig::load_or_default(&profile_dir, &profile_name)
+            .map_err(|e| format!("vault config error: {e}"))?;
+
+    if profile_config.encryption {
+        let key = session.keys.get(&profile_name).ok_or_else(|| {
+            format!(
+                "VAULT LOCKED: protected vault '{}' was not unlocked at server start \
+                 (--unlock {}); its contents are invisible to this session",
+                profile_name, profile_name
+            )
+        })?;
+        Storage::open_with_key(&profile_dir, &profile_config, Some(key))
+            .map_err(|e| format!("vault open error: {e}"))
+    } else {
+        Storage::open(&profile_dir, &profile_config).map_err(|e| format!("vault open error: {e}"))
+    }
+}
+
 impl McpServer {
     /// Run the MCP server, reading JSON-RPC from stdin and writing to stdout.
-    pub fn run(config: Config) -> Result<()> {
+    pub fn run(config: Config, opts: McpStartOpts) -> Result<()> {
+        // Build the session: unlock keys first (prompting before the JSON-RPC
+        // loop starts — never mid-session).
+        let mut keys = HashMap::new();
+        for name in &opts.unlock {
+            let profile_dir = config.profiles_dir.join(name);
+            let cfg = crate::config::profile::ProfileConfig::load_or_default(&profile_dir, name)?;
+            if !cfg.encryption {
+                continue; // nothing to unlock
+            }
+            let kdf = match cfg.protection.kdf.as_ref() {
+                Some(k) => k,
+                None => {
+                    eprintln!("skip unlock '{name}': vault config missing KDF parameters");
+                    continue;
+                }
+            };
+            let wrapped = match cfg.protection.wrapped_key_b64.as_deref() {
+                Some(w) => w,
+                None => {
+                    eprintln!("skip unlock '{name}': vault config missing wrapped key");
+                    continue;
+                }
+            };
+            let passphrase = rpassword::prompt_password(format!(
+                "Unlock passphrase for vault '{name}' (MCP session): "
+            ))?;
+            match VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf) {
+                Ok(key) => {
+                    keys.insert(name.clone(), key);
+                }
+                Err(_) => eprintln!("wrong passphrase for vault '{name}' — it stays locked"),
+            }
+        }
+
+        let mut scopes = HashMap::new();
+        for (name, level) in &opts.scopes {
+            scopes.insert(name.clone(), *level);
+        }
+
+        let audit_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("cerebro")
+            .join("audit")
+            .join("mcp.jsonl");
+        let session = McpSession { keys, scopes, audit_path };
+
         let stdin = io::stdin();
         let mut stdout = io::stdout();
         let reader = stdin.lock();
@@ -230,7 +384,7 @@ impl McpServer {
                 continue;
             }
 
-            let response = handle_request(&request, &config);
+            let response = handle_request(&request, &config, &session);
             if let Some(resp) = response {
                 writeln!(stdout, "{}", serde_json::to_string(&resp)?)?;
                 stdout.flush()?;
@@ -241,18 +395,11 @@ impl McpServer {
     }
 }
 
-fn open_storage(config: &Config, profile: Option<&str>) -> Result<Storage> {
-    let profile_name = profile
-        .or(config.active_profile.as_deref())
-        .or(Some(&config.default_profile))
-        .unwrap_or(&config.default_profile);
-
-    let profile_dir = config.profiles_dir.join(profile_name);
-    let profile_config = crate::config::profile::ProfileConfig::load_or_default(&profile_dir, profile_name)?;
-    Storage::open(&profile_dir, &profile_config)
-}
-
-fn handle_request(request: &JsonRpcRequest, config: &Config) -> Option<JsonRpcResponse> {
+fn handle_request(
+    request: &JsonRpcRequest,
+    config: &Config,
+    session: &McpSession,
+) -> Option<JsonRpcResponse> {
     match request.method.as_str() {
         "initialize" => {
             let client_version = request
@@ -312,12 +459,81 @@ fn handle_request(request: &JsonRpcRequest, config: &Config) -> Option<JsonRpcRe
                 });
             }
 
+            // Sandbox: resolve the effective profile + access level, enforce,
+            // audit. Locked/hidden vaults and policy denials are first-class
+            // isError results so clients can react (ADR 0007).
+            let target_profile = args
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    config
+                        .active_profile
+                        .clone()
+                        .unwrap_or_else(|| config.default_profile.clone())
+                });
+            let access = access_for(session, config, &target_profile);
+            let tool_in_deny_list = config
+                .mcp
+                .profiles
+                .get(&target_profile)
+                .map(|p| p.deny_tools.iter().any(|t| t == tool_name))
+                .unwrap_or(false);
+
+            if tool_in_deny_list {
+                audit_line(session, tool_name, &target_profile, "deny", "tool in profile deny-list");
+                return Some(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [{"type": "text", "text":
+                            format!("Access denied: tool '{tool_name}' is denied for profile '{target_profile}' by policy.")}],
+                        "isError": true
+                    })),
+                    error: None,
+                });
+            }
+
+            let is_write = WRITE_TOOLS.contains(&tool_name);
+            if access == McpAccess::None {
+                audit_line(session, tool_name, &target_profile, "deny", "policy: profile not exposed (allow=none)");
+                return Some(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [{"type": "text", "text":
+                            format!("Access denied: profile '{target_profile}' is not exposed over MCP (allow=none).")}],
+                        "isError": true
+                    })),
+                    error: None,
+                });
+            }
+            if is_write && access != McpAccess::Write {
+                audit_line(session, tool_name, &target_profile, "deny", "policy: read-only access");
+                return Some(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id.clone(),
+                    result: Some(json!({
+                        "content": [{"type": "text", "text":
+                            format!("Access denied: profile '{target_profile}' is read-only over MCP.")}],
+                        "isError": true
+                    })),
+                    error: None,
+                });
+            }
+
             // Tool execution failures are reported as a result with
             // isError=true per the MCP tools specification.
-            let result = execute_tool(tool_name, &args, config);
+            let result = execute_tool(tool_name, &args, config, session);
             let (text, is_error) = match result {
-                Ok(text) => (text, false),
-                Err(e) => (e, true),
+                Ok(text) => {
+                    audit_line(session, tool_name, &target_profile, "allow", "policy");
+                    (text, false)
+                }
+                Err(e) => {
+                    audit_line(session, tool_name, &target_profile, "error", &e);
+                    (e, true)
+                }
             };
 
             Some(JsonRpcResponse {
@@ -346,12 +562,17 @@ fn handle_request(request: &JsonRpcRequest, config: &Config) -> Option<JsonRpcRe
     }
 }
 
-fn execute_tool(name: &str, args: &Value, config: &Config) -> std::result::Result<String, String> {
+fn execute_tool(
+    name: &str,
+    args: &Value,
+    config: &Config,
+    session: &McpSession,
+) -> std::result::Result<String, String> {
     let profile = args.get("profile").and_then(|v| v.as_str());
 
-    let mut storage = match open_storage(config, profile) {
+    let mut storage = match open_sandboxed(session, config, profile) {
         Ok(s) => s,
-        Err(e) => return Err(format!("Error opening storage: {}", e)),
+        Err(e) => return Err(e),
     };
 
     match name {

@@ -43,8 +43,9 @@
 - **MCP server** — JSON-RPC 2.0 over stdio for Copilot, Hermes, and other MCP clients
 - **Tauri 2.0 GUI** — native desktop app (macOS + Linux), dark theme, split-pane layout
 - **CLI** — full command-line interface for scripting and automation
-- **Encryption (planned)** — AES-256-GCM per-profile encryption; dependencies
-  included, implementation in progress
+- **Encryption (optional, per vault)** — AES-256-GCM notes + SQLCipher
+  database, Argon2id passphrase; Business vaults protected by default,
+  Personal/Project opt-in (ADR 0006)
 
 ## Installation
 
@@ -193,6 +194,54 @@ The MCP server exposes 10 tools over stdio:
 
 > Unknown tools return a JSON-RPC error; tool failures set `isError: true`;
 > the server negotiates protocol versions 2024-11-05 through 2025-06-18.
+
+## Security
+
+Vaults are plaintext unless you protect them (ADR 0006). Protection is
+per-vault and encrypts everything at rest: every `.md` note (AES-256-GCM)
+and the database (SQLCipher). The master key is wrapped with Argon2id over
+your passphrase — **there is no recovery code and no reset**: losing the
+passphrase means losing the vault's contents.
+
+```bash
+cerebro vault encrypt work        # warns, asks passphrase twice
+cerebro vault status work         # protection status
+cerebro vault decrypt work        # removes protection (needs passphrase)
+```
+
+- Business vaults: protection recommended (prompted at creation).
+- Personal/Project vaults: plaintext by default — encryption never gets in
+  your way unless you turn it on.
+- Unlock lasts for the session; relock happens on system sleep or manually
+  (`Ctrl/Cmd+L` in the GUI). No idle relock.
+- macOS: `--keychain` optionally caches the unlock key behind your user
+  session for convenience. The passphrase remains the only credential.
+
+### MCP sandbox
+
+AI clients get what you declare, nothing more (ADR 0007):
+
+```toml
+[mcp.profiles.work]
+allow = "read"          # none | read | write
+deny_tools = ["cerebro_delete_note"]
+
+[mcp.profiles.personal]
+allow = "none"          # invisible over MCP
+```
+
+- Default: active profile read-only, everything else `none`.
+- `cerebro mcp --scope work:write` overrides for one session.
+- Protected vaults are invisible to MCP unless unlocked at server start
+  (`cerebro mcp --unlock work`).
+- Every call is audited to `~/.cerebro/audit/mcp.jsonl` (timestamp, tool,
+  profile, decision — never note content).
+
+### Contexts
+
+Vault kinds: `private` (personal), `business` (work), `project` — one vault
+per context, isolated at the storage level with independent keys and
+policies (ADR 0008).
 
 ## Configuration
 

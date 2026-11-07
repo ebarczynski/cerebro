@@ -16,6 +16,7 @@ use tauri_plugin_dialog::{FileDialogBuilder, DialogExt};
 
 use cerebro::config::app::Config;
 use cerebro::config::profile::{ProfileConfig, VaultKind};
+use cerebro::crypto::VaultKey;
 use cerebro::storage::{Note, NoteContent, SearchResult, Storage};
 
 // ── Application State ──────────────────────────────────────────
@@ -27,6 +28,9 @@ pub struct AppState {
     pub watcher: Mutex<Option<RecommendedWatcher>>,
     /// Path of the currently open vault directory (None until a vault is opened).
     pub open_vault_path: Mutex<Option<String>>,
+    /// Unlocked master key of the current vault (ADR 0006). Held ONLY while
+    /// the session is unlocked; dropped by lock_vault and on relock.
+    pub vault_key: Mutex<Option<VaultKey>>,
 }
 
 // ── DTOs for the frontend ──────────────────────────────────────
@@ -143,7 +147,12 @@ fn init_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
 }
 
 #[tauri::command]
-fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> Result<VaultInfo, String> {
+fn open_vault(
+    state: State<AppState>,
+    path: String,
+    profile: Option<String>,
+    passphrase: Option<String>,
+) -> Result<VaultInfo, String> {
     let profile_name = profile.unwrap_or_else(|| "personal".to_string());
     let profile_dir = PathBuf::from(&path);
 
@@ -155,7 +164,36 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
     let profile_config = ProfileConfig::load(&profile_dir)
         .unwrap_or_else(|_| ProfileConfig::new(&profile_name));
 
-    let mut storage = Storage::open(&profile_dir, &profile_config)
+    // Resolve the unlock key for protected vaults: explicit passphrase first,
+    // then the OS keychain convenience cache (never a prompt from the backend).
+    let key = if profile_config.encryption {
+        let resolved: Result<VaultKey, String> = match &passphrase {
+            Some(p) => VaultKey::unwrap_from_config(&profile_config, p)
+                .map_err(|e| format!("wrong passphrase: {e}")),
+            None => {
+                let keychain_ok = profile_config
+                    .protection
+                    .keychain_service
+                    .as_ref()
+                    .and_then(|service| VaultKey::from_keychain(service).ok().flatten());
+                match keychain_ok {
+                    Some(k) => Ok(k),
+                    None => Err(format!(
+                        "{}: vault '{profile_name}' is locked — passphrase required",
+                        cerebro::storage::VAULT_LOCKED_PREFIX
+                    )),
+                }
+            }
+        };
+        match resolved {
+            Ok(k) => Some(k),
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+
+    let mut storage = Storage::open_with_key(&profile_dir, &profile_config, key.as_ref())
         .map_err(|e| {
             let err_msg = e.to_string();
             if err_msg.contains("Permission denied") || err_msg.contains("permission denied") {
@@ -176,11 +214,10 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
 
     let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
     *storage_guard = Some(storage);
+    let mut key_guard = state.vault_key.lock().map_err(|e| e.to_string())?;
+    *key_guard = key;
     let mut pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
-    let kind_tag = pc_guard
-        .as_ref()
-        .map(|pc| pc.kind.as_tag().to_string())
-        .unwrap_or_else(|| "private".to_string());
+    let kind_tag = profile_config.kind.as_tag().to_string();
     *pc_guard = Some(profile_config);
     *state.open_vault_path.lock().map_err(|e| e.to_string())? = Some(path.clone());
 
@@ -191,6 +228,36 @@ fn open_vault(state: State<AppState>, path: String, profile: Option<String>) -> 
         tag_count,
         kind: kind_tag,
     })
+}
+
+/// Unlock flow: identical to open_vault with a passphrase — exists so the
+/// frontend lock/unlock UI has an explicit command.
+#[tauri::command]
+fn unlock_vault(
+    state: State<AppState>,
+    path: String,
+    profile: Option<String>,
+    passphrase: String,
+) -> Result<VaultInfo, String> {
+    open_vault(state, path, profile, Some(passphrase))
+}
+
+/// Relock: drop the storage handle and the in-memory key. The vault becomes
+/// locked for every subsequent operation until unlocked again.
+#[tauri::command]
+fn lock_vault(state: State<AppState>) -> Result<(), String> {
+    let mut storage_guard = state.storage.lock().map_err(|e| e.to_string())?;
+    *storage_guard = None;
+    let mut key_guard = state.vault_key.lock().map_err(|e| e.to_string())?;
+    *key_guard = None;
+    Ok(())
+}
+
+/// True when the current vault is protected (frontend shows the lock UI).
+#[tauri::command]
+fn vault_is_protected(state: State<AppState>) -> Result<bool, String> {
+    let pc_guard = state.profile_config.lock().map_err(|e| e.to_string())?;
+    Ok(pc_guard.as_ref().map(|pc| pc.encryption).unwrap_or(false))
 }
 
 // ── Profile Management ─────────────────────────────────────────
@@ -1188,6 +1255,7 @@ pub fn run() {
             profile_config: Mutex::new(None),
             watcher: Mutex::new(None),
             open_vault_path: Mutex::new(None),
+            vault_key: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             home_dir,
@@ -1195,6 +1263,9 @@ pub fn run() {
             pick_directory,
             init_vault,
             open_vault,
+            unlock_vault,
+            lock_vault,
+            vault_is_protected,
             set_vault_kind,
             list_profiles,
             get_active_profile,

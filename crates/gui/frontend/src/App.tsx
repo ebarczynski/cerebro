@@ -54,7 +54,7 @@ interface ProfileInfo {
   kind: string;
 }
 
-type VaultKindTag = "private" | "business";
+type VaultKindTag = "private" | "business" | "project";
 
 interface RecentVault {
   path: string;
@@ -1076,6 +1076,10 @@ export default function App() {
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => loadRecentVaults());
   const [createVaultOpen, setCreateVaultOpen] = useState(false);
   const [openVaultOpen, setOpenVaultOpen] = useState(false);
+  const [unlockPrompt, setUnlockPrompt] = useState<{ profile: string; path: string } | null>(null);
+  const [unlockPass, setUnlockPass] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [isProtectedVault, setIsProtectedVault] = useState(false);
   const [importObsidianOpen, setImportObsidianOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Note | null>(null);
@@ -1091,19 +1095,23 @@ export default function App() {
 
   // ── Load vault ─────────────────────────────────────────────
 
-  const loadVault = useCallback(async (profileName?: string, vaultPath?: string): Promise<boolean> => {
+  const loadVault = useCallback(async (profileName?: string, vaultPath?: string, passphrase?: string): Promise<boolean> => {
+    const home = await homeDir();
+    const profile = profileName || "personal";
+    const path = vaultPath || `${home}.cerebro/profiles/${profile}`;
     try {
-      const home = await homeDir();
-      const profile = profileName || "personal";
-      const path = vaultPath || `${home}.cerebro/profiles/${profile}`;
 
       const info = await invoke<{ name: string; path: string; note_count: number; tag_count: number; kind: string }>("open_vault", {
         path,
         profile,
+        ...(passphrase ? { passphrase } : {}),
       });
 
       setVaultOpen(true);
       setVaultPath(info.path);
+      try {
+        setIsProtectedVault(await invoke<boolean>("vault_is_protected"));
+      } catch { setIsProtectedVault(false); }
       setVaultName(info.name || profile);
       setVaultKind(normalizeKind(info.kind));
 
@@ -1142,7 +1150,13 @@ export default function App() {
       }));
       return true;
     } catch (e) {
+      const msg = String(e);
       console.error("Failed to load vault:", e);
+      if (msg.includes("VAULT LOCKED")) {
+        setUnlockPrompt({ profile, path });
+        setVaultOpen(false);
+        return false;
+      }
       setVaultOpen(false);
       return false;
     }
@@ -1178,6 +1192,52 @@ export default function App() {
       throw new Error(`Could not open vault${entry.path ? ` at ${entry.path}` : ` "${entry.profile}"`}`);
     }
   }, [loadVault]);
+
+  // ── Vault protection: lock + unlock (ADR 0006) ─────────────
+
+  const handleLockVault = useCallback(async () => {
+    if (!isProtectedVault) return;
+    try { await invoke("lock_vault"); } catch (e) { console.warn("lock failed:", e); }
+    setVaultOpen(false);
+    setIsProtectedVault(false);
+  }, [isProtectedVault]);
+
+  const handleUnlockSubmit = useCallback(async () => {
+    if (!unlockPrompt) return;
+    setUnlockError(null);
+    const ok = await loadVault(unlockPrompt.profile, unlockPrompt.path, unlockPass);
+    if (ok) {
+      setUnlockPrompt(null);
+      setUnlockPass("");
+    } else {
+      setUnlockError("Wrong passphrase or vault error.");
+    }
+  }, [unlockPrompt, unlockPass, loadVault]);
+
+  // Relock after system sleep: wall-clock jumps far between ticks.
+  useEffect(() => {
+    let last = Date.now();
+    const t = setInterval(() => {
+      const now = Date.now();
+      if (now - last > 120_000) {
+        handleLockVault();
+      }
+      last = now;
+    }, 60_000);
+    return () => clearInterval(t);
+  }, [handleLockVault]);
+
+  // Ctrl/Cmd+L locks a protected vault.
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "l") {
+        ev.preventDefault();
+        handleLockVault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleLockVault]);
 
   // ── Vault switching (recent list) ──────────────────────────
 
@@ -1662,6 +1722,57 @@ export default function App() {
         {createVaultOpen && (
           <CreateVaultModal onCreate={handleCreateVault} onClose={() => setCreateVaultOpen(false)} />
         )}
+
+        {unlockPrompt && !vaultOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+            <div className="w-96 rounded-xl border border-[#2a2a3a] bg-[#12121a] p-6">
+              <h2 className="text-lg font-semibold text-[#e8e8f0] mb-1">
+                Unlock vault 🔒
+              </h2>
+              <p className="text-xs text-[#8888a0] mb-4">
+                Vault <span className="font-mono text-[#c4c4d4]">{unlockPrompt.profile}</span> is
+                protected. Enter its passphrase — it is never stored.
+              </p>
+              <input
+                type="password"
+                autoFocus
+                value={unlockPass}
+                onChange={(e) => setUnlockPass(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleUnlockSubmit(); }}
+                className="w-full rounded-lg border border-[#2a2a3a] bg-[#1a1a25] px-3 py-2 text-sm text-[#e8e8f0] outline-none focus:border-[#6366f1]"
+                placeholder="Passphrase"
+              />
+              {unlockError && (
+                <p className="mt-2 text-xs text-red-400">{unlockError}</p>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(null); }}
+                  className="rounded-lg px-3 py-1.5 text-sm text-[#8888a0] hover:text-[#c4c4d4]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUnlockSubmit}
+                  className="rounded-lg bg-[#6366f1] px-4 py-1.5 text-sm font-medium text-white hover:bg-[#7c7ff5]"
+                >
+                  Unlock
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {vaultOpen && isProtectedVault && (
+          <button
+            onClick={handleLockVault}
+            title="Lock vault (Ctrl+L)"
+            className="fixed right-4 top-3 z-40 rounded-md border border-[#2a2a3a] bg-[#1a1a25] px-2 py-1 text-xs text-[#8888a0] hover:text-[#c4c4d4]"
+          >
+            🔒 Lock
+          </button>
+        )}
+
         {openVaultOpen && (
           <OpenVaultModal
             recentVaults={recentVaults}

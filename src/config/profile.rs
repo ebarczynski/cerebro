@@ -40,21 +40,25 @@ pub enum VaultKind {
     Private,
     /// Corporate / work vault.
     Business,
+    /// Dedicated project vault (ADR 0008 — contexts are profiles).
+    Project,
 }
 
 impl VaultKind {
-    /// Machine-readable tag used by the GUI ("private" | "business").
+    /// Machine-readable tag used by the GUI ("private" | "business" | "project").
     pub fn as_tag(&self) -> &'static str {
         match self {
             VaultKind::Private => "private",
             VaultKind::Business => "business",
+            VaultKind::Project => "project",
         }
     }
 
-    /// Parse the tag form ("private" | "business"), case-insensitive.
+    /// Parse the tag form ("private" | "business" | "project"), case-insensitive.
     pub fn from_tag(tag: &str) -> Self {
         match tag.trim().to_lowercase().as_str() {
             "business" | "work" | "corporate" => VaultKind::Business,
+            "project" => VaultKind::Project,
             _ => VaultKind::Private,
         }
     }
@@ -88,6 +92,31 @@ impl Default for KnowledgePalaceSection {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ProtectionSection
+// ---------------------------------------------------------------------------
+
+/// Encryption parameters for a protected vault (ADR 0006). Populated by
+/// `cerebro vault encrypt`; empty for plaintext vaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ProtectionSection {
+    /// Argon2id salt + cost parameters.
+    #[serde(default)]
+    pub kdf: Option<crate::crypto::KdfParams>,
+    /// Master key wrapped under the Argon2id-derived passphrase key:
+    /// base64(nonce || AES-256-GCM ciphertext).
+    #[serde(default)]
+    pub wrapped_key_b64: Option<String>,
+    /// Optional macOS keychain convenience handle. Convenience ONLY — the
+    /// passphrase remains the sole root credential.
+    #[serde(default)]
+    pub keychain_service: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// SyncSection
+// ---------------------------------------------------------------------------
 
 /// Sync settings for a profile vault.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -137,11 +166,16 @@ pub struct ProfileConfig {
     #[serde(default = "default_notes_dir")]
     pub notes_dir: PathBuf,
 
-    /// Whether the vault contents are encrypted at rest.
+    /// Whether the vault contents are encrypted at rest (ADR 0006).
     #[serde(default)]
     pub encryption: bool,
 
-    /// Ownership kind — private (personal) vs business (corporate).
+    /// Encryption parameters — salt, Argon2id params, wrapped master key.
+    /// Required when `encryption` is true.
+    #[serde(default)]
+    pub protection: ProtectionSection,
+
+    /// Ownership kind — private (personal), business (corporate), project.
     #[serde(default)]
     pub kind: VaultKind,
 
@@ -172,6 +206,7 @@ impl ProfileConfig {
             display_name,
             notes_dir: default_notes_dir(),
             encryption: false,
+            protection: ProtectionSection::default(),
             kind: VaultKind::default(),
             knowledge_palace: KnowledgePalaceSection::default(),
             sync: SyncSection::default(),
@@ -286,6 +321,17 @@ impl ProfileConfig {
         if self.sync.method == SyncMethod::Git && self.sync.remote.is_empty() {
             return Err(ConfigError::Validation(
                 "git sync requires a remote URL".to_string(),
+            ));
+        }
+
+        // A protected vault must carry its key-wrapping parameters (ADR 0006).
+        if self.encryption
+            && (self.protection.kdf.is_none() || self.protection.wrapped_key_b64.is_none())
+        {
+            return Err(ConfigError::Validation(
+                "encryption=true requires protection.kdf and protection.wrapped_key_b64 \
+                 (enable via `cerebro vault encrypt <name>`)"
+                    .to_string(),
             ));
         }
 

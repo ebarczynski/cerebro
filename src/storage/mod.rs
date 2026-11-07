@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::config::profile::ProfileConfig;
+use crate::crypto::{self, VaultKey};
 use crate::parser::{extract_links_and_metadata, ParsedNote};
+
+/// Error prefix distinguishing "protected vault, no key provided" from other
+/// failures. Callers (CLI prompt, GUI unlock dialog, MCP denial) match on it.
+pub const VAULT_LOCKED_PREFIX: &str = "VAULT LOCKED";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -67,23 +72,102 @@ pub struct Storage {
     db: Connection,
     notes_dir: PathBuf,
     profile_name: String,
+    /// Present when the vault is protected and this session is unlocked.
+    crypto: Option<VaultKey>,
 }
 
 impl Storage {
     pub fn open(profile_dir: &Path, profile_config: &ProfileConfig) -> Result<Self> {
+        Self::open_with_key(profile_dir, profile_config, None)
+    }
+
+    /// Open a vault, optionally with an unlocked master key (ADR 0006).
+    ///
+    /// A protected vault opened WITHOUT a key returns a `VAULT LOCKED`
+    /// error — callers prompt, read the keychain, or deny (MCP).
+    /// A SQLCipher build opening an unprotected vault without a key reads
+    /// plaintext transparently.
+    pub fn open_with_key(
+        profile_dir: &Path,
+        profile_config: &ProfileConfig,
+        key: Option<&VaultKey>,
+    ) -> Result<Self> {
         let notes_dir = profile_config.resolved_notes_dir(profile_dir);
         std::fs::create_dir_all(&notes_dir)?;
+
+        if profile_config.encryption && key.is_none() {
+            bail!(
+                "{}: vault '{}' is protected and this session has no unlock key \
+                 (unlock via passphrase, keychain, or policy)",
+                VAULT_LOCKED_PREFIX,
+                profile_config.name
+            );
+        }
 
         let db_path = profile_dir.join("db.sqlite");
         let db = Connection::open(&db_path)
             .with_context(|| format!("opening database at {:?}", db_path))?;
 
+        // SQLCipher: the key MUST be set before any other statement on an
+        // encrypted database.
+        if profile_config.encryption {
+            let key = key.expect("checked above");
+            db.execute_batch(&format!(
+                "PRAGMA key = {};",
+                key.sqlcipher_pragma_value()
+            ))?;
+            // Force an early read so a WRONG key fails here with a clear
+            // message instead of a confusing failure at first migration.
+            db.execute_batch("SELECT count(*) FROM sqlite_master;")?;
+        }
+
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
         let profile_name = profile_config.name.clone();
-        let mut storage = Storage { db, notes_dir, profile_name };
+        let mut storage = Storage {
+            db,
+            notes_dir,
+            profile_name,
+            crypto: key.cloned(),
+        };
         storage.run_migrations()?;
         Ok(storage)
+    }
+
+    /// True when this vault requires an unlock key (whether or not the
+    /// current session has one).
+    pub fn is_protected(&self) -> bool {
+        self.crypto.is_some()
+    }
+
+    /// Read a note file, decrypting when the vault is protected and the
+    /// bytes carry Cerebro's encryption magic. Plaintext bytes inside a
+    /// protected vault (e.g. dropped in externally) are read as-is and will
+    /// be encrypted on the next write.
+    fn read_note_file(&self, path: &Path) -> Result<String> {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading note file {:?}", path))?;
+        let decrypted = match (&self.crypto, crypto::looks_encrypted(&bytes)) {
+            (Some(key), true) => Some(key.decrypt_bytes(&bytes)?),
+            (Some(_), false) => None, // plaintext inside a protected vault
+            (None, true) => bail!(
+                "encrypted note found but the vault was opened without a key: {:?}",
+                path
+            ),
+            (None, false) => None,
+        };
+        let bytes = decrypted.unwrap_or(bytes);
+        String::from_utf8(bytes).with_context(|| format!("note file is not UTF-8: {:?}", path))
+    }
+
+    /// Write a note file, encrypting when the vault is protected.
+    fn write_note_file(&self, path: &Path, content: &str) -> Result<()> {
+        let bytes = match &self.crypto {
+            Some(key) => key.encrypt_bytes(content.as_bytes())?,
+            None => content.as_bytes().to_vec(),
+        };
+        std::fs::write(path, bytes)
+            .with_context(|| format!("writing note file {:?}", path))
     }
 
     pub fn profile_name(&self) -> &str {
@@ -195,9 +279,7 @@ impl Storage {
             content.to_string()
         };
 
-        std::fs::write(&file_path, &full_content)
-            .with_context(|| format!("writing note file {:?}", file_path))?;
-
+        self.write_note_file(&file_path, &full_content)?;
         // Insert into database
         let frontmatter_json = if parsed.frontmatter.is_empty() {
             None
@@ -264,7 +346,7 @@ impl Storage {
 
         // Write file
         let file_path = self.notes_dir.join(&note.path);
-        std::fs::write(&file_path, new_content)?;
+        self.write_note_file(&file_path, new_content)?;
 
         // Update DB
         self.db.execute(
@@ -357,8 +439,7 @@ impl Storage {
     pub fn read_note(&self, identifier: &str) -> Result<NoteContent> {
         let note = self.find_note(identifier)?;
         let file_path = self.notes_dir.join(&note.path);
-        let body = std::fs::read_to_string(&file_path)
-            .with_context(|| format!("reading note file {:?}", file_path))?;
+        let body = self.read_note_file(&file_path)?;
         Ok(NoteContent { note, body })
     }
 
@@ -497,6 +578,12 @@ impl Storage {
         // Walk notes directory
         let md_files = walk_md_files(&self.notes_dir)?;
 
+        // Pass 1: upsert notes (rows, FTS, tags). Link resolution is
+        // deferred to pass 2 so links resolve regardless of directory-walk
+        // order — a source file sorting before its target file used to
+        // silently drop the backlink (grill-discovered defect).
+        let mut parsed_notes: Vec<(String, ParsedNote, String)> = Vec::new();
+
         for path in &md_files {
             let relative = path
                 .strip_prefix(&self.notes_dir)
@@ -504,7 +591,7 @@ impl Storage {
                 .to_string_lossy()
                 .to_string();
 
-            let content = match std::fs::read_to_string(path) {
+            let content = match self.read_note_file(path) {
                 Ok(c) => c,
                 Err(_) => {
                     stats.errors += 1;
@@ -553,13 +640,11 @@ impl Storage {
                 )?;
 
                 self.db
-                    .execute("DELETE FROM links WHERE source_id = ?1", params![id])?;
-                self.update_links(&id, &parsed.wikilinks, &content)?;
-                self.db
                     .execute("DELETE FROM note_tags WHERE note_id = ?1", params![id])?;
                 self.update_tag_counts(&id, &parsed.tags)?;
 
                 stats.updated += 1;
+                parsed_notes.push((id, parsed, content));
             } else {
                 // Create new
                 let id = Uuid::now_v7().to_string();
@@ -581,11 +666,19 @@ impl Storage {
                     ],
                 )?;
 
-                self.update_links(&id, &parsed.wikilinks, &content)?;
                 self.update_tag_counts(&id, &parsed.tags)?;
 
                 stats.created += 1;
+                parsed_notes.push((id, parsed, content));
             }
+        }
+
+        // Pass 2: rebuild links now that EVERY note exists in the database —
+        // resolution no longer depends on walk order (grill-discovered defect).
+        for (id, parsed, content) in &parsed_notes {
+            self.db
+                .execute("DELETE FROM links WHERE source_id = ?1", params![id])?;
+            self.update_links(id, &parsed.wikilinks, content)?;
         }
 
         // Remove notes whose files no longer exist
@@ -733,6 +826,168 @@ impl Storage {
 
         edges.sort_by(|a, b| a.source_id.cmp(&b.source_id));
         Ok((notes, edges))
+    }
+
+    // ── Protection migration (ADR 0006) ───────────────────────────
+
+    /// Back up the vault (db + notes) before an encryption migration.
+    fn backup_vault(&self, profile_dir: &Path) -> Result<PathBuf> {
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let dest = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("cerebro")
+            .join("backups")
+            .join(format!("{}-{}", self.profile_name, ts));
+        std::fs::create_dir_all(&dest)?;
+        let db = profile_dir.join("db.sqlite");
+        if db.exists() {
+            std::fs::copy(&db, dest.join("db.sqlite"))?;
+        }
+        let notes_backup = dest.join("notes");
+        copy_dir_recursive(&self.notes_dir, &notes_backup)?;
+        Ok(dest)
+    }
+
+    /// Enable at-rest protection: wrap the master key under the passphrase,
+    /// re-encrypt every note file, and rebuild the database as SQLCipher
+    /// (fresh migrations + reindex — files are the source of truth, ADR 0001).
+    pub fn enable_protection(
+        profile_dir: &Path,
+        cfg: &mut ProfileConfig,
+        passphrase: &str,
+    ) -> Result<()> {
+        if cfg.encryption {
+            bail!("vault '{}' is already protected", cfg.name);
+        }
+
+        // Pre-flight open must succeed (vault is plaintext).
+        {
+            let _plain = Storage::open(profile_dir, cfg)?;
+        }
+
+        let key = VaultKey::generate();
+        let params = crypto::KdfParams::generate();
+        let wrapped = key.wrap_with_passphrase(passphrase, &params)?;
+
+        // Pre-flight backup BEFORE touching anything.
+        {
+            let probe = Storage::open(profile_dir, cfg)?;
+            let dest = probe.backup_vault(profile_dir)?;
+            tracing::info!("pre-migration backup at {:?}", dest);
+        }
+
+        // Flip the config first: subsequent opens require/use the key.
+        cfg.encryption = true;
+        cfg.protection = crate::config::profile::ProtectionSection {
+            kdf: Some(params),
+            wrapped_key_b64: Some(wrapped),
+            keychain_service: None,
+        };
+        cfg.save_to(profile_dir)?;
+
+        // Re-encrypt note files (plaintext in → ciphertext out). FILE OPS
+        // ONLY — no Storage open here: the on-disk database is still
+        // plaintext at this point, and a keyed open against it fails.
+        {
+            let notes_dir = cfg.resolved_notes_dir(profile_dir);
+            for path in walk_md_files(&notes_dir)? {
+                let bytes = std::fs::read(&path)?;
+                if !crypto::looks_encrypted(&bytes) {
+                    let ct = key.encrypt_bytes(&bytes)?;
+                    std::fs::write(&path, ct)?;
+                }
+            }
+        }
+
+        // Rebuild the database inside the SQLCipher envelope.
+        for suffix in ["", "-wal", "-shm"] {
+            let db = profile_dir.join(format!("db.sqlite{suffix}"));
+            if db.exists() {
+                std::fs::remove_file(&db)
+                    .with_context(|| format!("removing {:?}", db))?;
+            }
+        }
+        let mut storage = Storage::open_with_key(profile_dir, cfg, Some(&key))?;
+        let stats = storage.reindex_all()?;
+        if stats.errors > 0 {
+            bail!(
+                "encryption migration finished with {} reindex errors — inspect the vault",
+                stats.errors
+            );
+        }
+        Ok(())
+    }
+
+    /// Disable at-rest protection: decrypt every note file and rebuild the
+    /// database as plaintext. Requires the current passphrase.
+    pub fn disable_protection(
+        profile_dir: &Path,
+        cfg: &mut ProfileConfig,
+        passphrase: &str,
+    ) -> Result<()> {
+        if !cfg.encryption {
+            bail!("vault '{}' is not protected", cfg.name);
+        }
+        let kdf = cfg
+            .protection
+            .kdf
+            .as_ref()
+            .ok_or_else(|| anyhow!("vault config missing KDF parameters"))?;
+        let wrapped = cfg
+            .protection
+            .wrapped_key_b64
+            .as_ref()
+            .ok_or_else(|| anyhow!("vault config missing wrapped master key"))?;
+        let key = VaultKey::unwrap_with_passphrase(wrapped, passphrase, kdf)?;
+
+        // Backup before touching anything.
+        {
+            let storage = Storage::open_with_key(profile_dir, cfg, Some(&key))?;
+            let dest = storage.backup_vault(profile_dir)?;
+            tracing::info!("pre-migration backup at {:?}", dest);
+        }
+
+        // Decrypt note files (ciphertext in → plaintext out). FILE OPS ONLY —
+        // the migration rebuilds the database afterwards.
+        {
+            let notes_dir = cfg.resolved_notes_dir(profile_dir);
+            for path in walk_md_files(&notes_dir)? {
+                let bytes = std::fs::read(&path)?;
+                if crypto::looks_encrypted(&bytes) {
+                    let pt = key.decrypt_bytes(&bytes)?;
+                    std::fs::write(&path, pt)?;
+                }
+            }
+        }
+
+        let keychain_service = cfg.protection.keychain_service.clone();
+
+        // Flip the config, then rebuild the database as plaintext.
+        cfg.encryption = false;
+        cfg.protection = crate::config::profile::ProtectionSection::default();
+        cfg.save_to(profile_dir)?;
+
+        for suffix in ["", "-wal", "-shm"] {
+            let db = profile_dir.join(format!("db.sqlite{suffix}"));
+            if db.exists() {
+                std::fs::remove_file(&db)
+                    .with_context(|| format!("removing {:?}", db))?;
+            }
+        }
+        let mut storage = Storage::open(profile_dir, cfg)?;
+        let stats = storage.reindex_all()?;
+        if stats.errors > 0 {
+            bail!(
+                "decryption migration finished with {} reindex errors — inspect the vault",
+                stats.errors
+            );
+        }
+
+        // Remove the convenience keychain cache, if any.
+        if let Some(service) = &keychain_service {
+            let _ = VaultKey::remove_from_keychain(service);
+        }
+        Ok(())
     }
 
     // ── Category & Favorites ──────────────────────────────────────
@@ -1092,4 +1347,20 @@ fn walk_md_files(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
+}
+
+/// Recursively copy a directory tree (used for pre-migration backups).
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }

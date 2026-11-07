@@ -1,6 +1,6 @@
 [package]
 name = "cerebro"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.96.0"
 description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
@@ -26,7 +26,13 @@ clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 
 # Database
-rusqlite = { version = "0.34", features = ["bundled", "functions", "column_decltype"] }
+rusqlite = { version = "0.34", features = ["bundled-sqlcipher-vendored-openssl", "functions", "column_decltype"] }
+
+# Vault encryption (ADR 0006) — key derivation + AES-256-GCM content
+base64 = "0.22"
+rpassword = "7"
+keyring = "3"
+getrandom = "0.2"
 
 # Markdown
 pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }

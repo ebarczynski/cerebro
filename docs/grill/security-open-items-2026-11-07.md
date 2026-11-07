@@ -1,6 +1,10 @@
 # Security design — open items (2026-11-07)
 
-Status: **ROUND 2 SETTLED — design complete, awaiting GO.** All five
+Status: **GO EXECUTED 2026-11-07 — all 5 queue items implemented** on branch
+`barczynski/security-design-2026-11-07`. 97 tests green (was 84; +13 security
+tests), clippy clean, GUI + frontend compile. Bonus fix: two-pass reindex
+(order-independent link resolution — pre-existing silent backlink loss).
+Verified interpretation: TouchID stays as optional keychain convenience. All five
 round-2 decisions recorded in ADR 0006/0007 addenda. One interpretation
 flagged for confirmation at GO (see below).
 

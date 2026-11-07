@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export type VaultKindTag = 'private' | 'business';
+export type VaultKindTag = 'private' | 'business' | 'project';
 
 export interface RecentVault {
   path: string;
@@ -32,6 +32,7 @@ interface StatusBarProps {
 export const VAULT_KIND_META: Record<VaultKindTag, { label: string; icon: string; color: string }> = {
   private: { label: 'Private', icon: '🔒', color: '#6366f1' },
   business: { label: 'Business', icon: '💼', color: '#f59e0b' },
+  project: { label: 'Project', icon: '📁', color: '#10b981' },
 };
 
 export function KindBadge({ kind, size }: { kind: VaultKindTag; size: 'sm' | 'lg' }) {
