@@ -176,7 +176,7 @@ the always-available cheat sheet. Highlights:
 
 ### MCP Tools (for AI coding tools)
 
-The MCP server exposes 9 tools over stdio (10th is gated — see footnote):
+The MCP server exposes 10 tools over stdio:
 
 | Tool | Description |
 |------|-------------|
@@ -189,11 +189,10 @@ The MCP server exposes 9 tools over stdio (10th is gated — see footnote):
 | `cerebro_list_tags` | List all tags with counts |
 | `cerebro_backlinks` | Get notes linking to a given note |
 | `cerebro_graph` | Get the full knowledge graph (nodes + edges) |
+| `cerebro_kp_search` | Semantic/hybrid/keyword search via Knowledge Palace — falls back to local FTS when KP is down, explicitly labeled |
 
-> `cerebro_kp_search` ships once the Knowledge Palace API contract is
-> verified against KP's source (ADR 0005) — not before. Unknown tools return
-> a JSON-RPC error; tool failures set `isError: true`; the server speaks
-> protocol versions 2024-11-05 through 2025-06-18.
+> Unknown tools return a JSON-RPC error; tool failures set `isError: true`;
+> the server negotiates protocol versions 2024-11-05 through 2025-06-18.
 
 ## Configuration
 

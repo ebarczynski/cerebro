@@ -427,7 +427,12 @@ fn test_mcp_protocol_contract() {
     .unwrap();
     writeln!(
         stdin,
-        r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"cerebro_does_not_exist","arguments":{{}}}}}}"#
+        r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"cerebro_kp_search","arguments":{{"query":"anything"}}}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"cerebro_does_not_exist","arguments":{{}}}}}}"#
     )
     .unwrap();
     drop(stdin);
@@ -439,8 +444,8 @@ fn test_mcp_protocol_contract() {
     // The notification must NOT have produced a response line (F17)
     assert_eq!(
         lines.len(),
-        4,
-        "expected exactly 4 responses (initialize, tools/list, graph, error); got {}: {:?}",
+        5,
+        "expected exactly 5 responses (initialize, tools/list, graph, kp, error); got {}: {:?}",
         lines.len(),
         lines
     );
@@ -448,19 +453,26 @@ fn test_mcp_protocol_contract() {
     // initialize: negotiated protocol version echoed
     assert!(lines[0].contains("2025-06-18"), "got: {}", lines[0]);
 
-    // tools/list: cerebro_graph present; kp_search gated (ADR 0005)
+    // tools/list: all 10 documented tools present (ADR 0005: kp_search
+    // shipped after contract verification against KP source)
     assert!(lines[1].contains("cerebro_graph"), "got: {}", lines[1]);
-    assert!(
-        !lines[1].contains("cerebro_kp_search"),
-        "kp_search must stay unlisted until the KP contract is verified"
-    );
+    assert!(lines[1].contains("cerebro_kp_search"), "got: {}", lines[1]);
 
     // cerebro_graph returns nodes + edges with the seeded note
     assert!(lines[2].contains("node_count"), "got: {}", lines[2]);
     assert!(lines[2].contains("Graph A"), "got: {}", lines[2]);
 
+    // cerebro_kp_search with KP disabled: graceful local-FTS fallback,
+    // explicitly labeled, still a success result
+    assert!(lines[3].contains("local_fts"), "got: {}", lines[3]);
+    assert!(
+        lines[3].contains("Knowledge Palace unavailable"),
+        "got: {}",
+        lines[3]
+    );
+    assert!(lines[3].contains("\"isError\":false"), "got: {}", lines[3]);
+
     // Unknown tool: JSON-RPC error object, not success-shaped text (F9)
-    assert!(lines[3].contains("\"error\""), "got: {}", lines[3]);
-    assert!(lines[3].contains("-32602"), "got: {}", lines[3]);
-    assert!(!lines[3].contains("Unknown tool: cerebro_does_not_exist\n\"}"), "sanity");
+    assert!(lines[4].contains("\"error\""), "got: {}", lines[4]);
+    assert!(lines[4].contains("-32602"), "got: {}", lines[4]);
 }

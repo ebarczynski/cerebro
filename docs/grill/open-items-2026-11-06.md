@@ -1,10 +1,13 @@
 # Open Items — updated after grill round 1 (2026-11-06)
 
-Status: **GO RECEIVED 2026-11-07 — Phase A queue EXECUTED on branch
-`barczynski/grill-2026-11-06`.** Items 1–5 implemented, 79 tests green,
-defect battery re-verified live. Remaining open item: KP contract
-verification (needs KP repo or live :8080) before `cerebro_kp_search`.
-Owner merges the branch.
+Status: **GO RECEIVED 2026-11-07 — Phase A queue EXECUTED; Phase B KP leg
+EXECUTED** on branch `barczynski/grill-2026-11-06`. 84 tests green; defect
+battery + KP fallback re-verified live. KP contract verified against KP
+source @ `82775ae` → `cerebro_kp_search` shipped (ADR 0005 addendum);
+end-to-end against a live KP instance still pending (KP not running at
+implementation time). Remaining Phase B tripwires per ADR 0003: REST/SSE
+(needs a consumer), sync hardening (needs a real conflict), encryption
+(owner implementation). Owner merges the branch.
 
 ## Decided (see ADRs)
 
@@ -21,11 +24,11 @@ Owner merges the branch.
 
 ## Still open
 
-1. **Phase boundary pinning** — exact contents of Phase A "done" (proposed:
-   S1 fixes + honesty pass + MCP fixes + README/plan reconciliation shipped
-   in one release). Owner confirms at GO.
-2. **KP contract verification path** — KP repo not on this machine; owner to
-   point at the KP source or spin up :8080 before `cerebro_kp_search` work.
+1. **Phase boundary pinning** — Phase A "done" shipped with the grill
+   branch; Phase B items follow their tripwires (ADR 0003).
+2. **KP live end-to-end** — contract verified against KP source and
+   `cerebro_kp_search` shipped; run one search against a live KP instance
+   (:8080) to close the loop.
 3. **Deferred with tripwires** (recorded in ADR 0003): REST/SSE transport,
    sync conflict handling, encryption claim rewording, O(n²) keyword links
    (tripwire: any vault >5k notes).

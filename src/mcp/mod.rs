@@ -163,6 +163,20 @@ fn cerebro_tools() -> Vec<McpTool> {
                 }
             }),
         },
+        McpTool {
+            name: "cerebro_kp_search".into(),
+            description: "Semantic/hybrid/keyword search via Knowledge Palace (pgvector). Falls back to local FTS when KP is disabled or unreachable. Contract verified against KP source (ADR 0005 addendum).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "mode": {"type": "string", "enum": ["semantic", "keyword", "hybrid"], "default": "hybrid", "description": "Search mode"},
+                    "limit": {"type": "integer", "default": 5},
+                    "profile": {"type": "string", "description": "Profile used for the local fallback (default: active)"}
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -465,6 +479,65 @@ fn execute_tool(name: &str, args: &Value, config: &Config) -> std::result::Resul
             }
             Err(e) => Err(format!("Graph error: {}", e)),
         },
+
+        "cerebro_kp_search" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("hybrid");
+            let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(5);
+
+            // KP calls are async; the MCP loop is sync — drive them on a
+            // throwaway current-thread runtime (one call at a time).
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Runtime error: {}", e))?;
+
+            let kp_config = crate::kp::KpConfig {
+                enabled: config.knowledge_palace.enabled,
+                endpoint: if config.knowledge_palace.endpoint.is_empty() {
+                    "http://localhost:8080".to_string()
+                } else {
+                    config.knowledge_palace.endpoint.clone()
+                },
+            };
+            let connector = crate::kp::KpConnector::new(kp_config);
+
+            let kp_result = rt.block_on(connector.search_with_mode(query, mode, limit));
+            match kp_result {
+                Ok(hits) => {
+                    let payload = serde_json::json!({
+                        "source": "knowledge_palace",
+                        "mode": mode,
+                        "query": query,
+                        "total": hits.len(),
+                        "hits": hits,
+                    });
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("Serialization error: {}", e))
+                }
+                Err(kp_err) => {
+                    // Graceful degradation per the plan: KP disabled/unreachable
+                    // → local FTS with an explicit note, still a success result.
+                    match storage.search(query, limit) {
+                        Ok(local) => {
+                            let payload = serde_json::json!({
+                                "source": "local_fts",
+                                "note": format!("Knowledge Palace unavailable ({kp_err}); served local FTS results"),
+                                "mode": "keyword",
+                                "query": query,
+                                "total": local.len(),
+                                "hits": local,
+                            });
+                            serde_json::to_string_pretty(&payload)
+                                .map_err(|e| format!("Serialization error: {}", e))
+                        }
+                        Err(local_err) => Err(format!(
+                            "KP error: {kp_err}; local fallback error: {local_err}"
+                        )),
+                    }
+                }
+            }
+        }
 
         _ => Err(format!("Unknown tool: {}", name)),
     }

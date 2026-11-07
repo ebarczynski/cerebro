@@ -105,6 +105,12 @@ pub enum Commands {
     /// Start MCP server (stdio)
     Mcp,
 
+    /// Knowledge Palace semantic search
+    Kp {
+        #[command(subcommand)]
+        action: KpCommands,
+    },
+
     /// Sync vault with Git remote
     Sync {
         #[command(subcommand)]
@@ -191,6 +197,23 @@ pub enum SyncCommands {
     Pull,
 }
 
+#[derive(Subcommand)]
+pub enum KpCommands {
+    /// Search via Knowledge Palace (falls back to local FTS if KP is down)
+    Search {
+        /// Search query
+        query: String,
+        /// Search mode: semantic, keyword, hybrid
+        #[arg(long, default_value = "hybrid")]
+        mode: String,
+        /// Maximum results
+        #[arg(long, short, default_value = "5")]
+        limit: i64,
+    },
+    /// Check KP reachability
+    Health,
+}
+
 // ── CLI Runner ───────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -255,6 +278,10 @@ pub fn run(cli: Cli) -> Result<()> {
             cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
         Commands::Mcp => crate::mcp::McpServer::run(config),
+        Commands::Kp { action } => {
+            let storage = open_storage(&config, profile_name)?;
+            cmd_kp(&config, &storage, action)
+        }
         Commands::Sync { action } => {
             cmd_sync(&config, profile_name, action)
         }
@@ -566,6 +593,71 @@ fn cmd_import(
     println!("  Path: {}", note.path);
     println!("  Words: {}", note.word_count);
     println!("  Tags: {:?}", note.tags);
+    Ok(())
+}
+
+fn cmd_kp(config: &Config, storage: &Storage, action: KpCommands) -> Result<()> {
+    let kp_config = crate::kp::KpConfig {
+        enabled: config.knowledge_palace.enabled,
+        endpoint: if config.knowledge_palace.endpoint.is_empty() {
+            "http://localhost:8080".to_string()
+        } else {
+            config.knowledge_palace.endpoint.clone()
+        },
+    };
+    let connector = crate::kp::KpConnector::new(kp_config);
+
+    // KP calls are async; the CLI loop is sync — same throwaway-runtime
+    // pattern as the MCP server.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    match action {
+        KpCommands::Health => {
+            let healthy = rt.block_on(connector.health_check())?;
+            if healthy {
+                println!("✓ Knowledge Palace healthy at {}", config.knowledge_palace.endpoint);
+            } else if !config.knowledge_palace.enabled {
+                println!("✗ Knowledge Palace integration is disabled in config.toml");
+            } else {
+                println!("✗ Knowledge Palace unreachable at {}", config.knowledge_palace.endpoint);
+            }
+        }
+        KpCommands::Search { query, mode, limit } => {
+            let hits = match rt.block_on(connector.search_with_mode(&query, &mode, limit)) {
+                Ok(h) => h,
+                Err(e) => {
+                    println!("⚠ KP unavailable ({}); falling back to local FTS", e);
+                    let local = storage.search(&query, limit)?;
+                    for (i, r) in local.iter().enumerate() {
+                        println!("{}. {} [{}] (score: {:.4})", i + 1, r.title, r.path, r.rank);
+                        println!("   {}", truncate(&r.snippet, 100));
+                    }
+                    println!("{} local results", local.len());
+                    return Ok(());
+                }
+            };
+            if hits.is_empty() {
+                println!("No KP results for '{}'.", query);
+                return Ok(());
+            }
+            for (i, h) in hits.iter().enumerate() {
+                println!(
+                    "{}. {} (score: {:.3}, source: {})",
+                    i + 1,
+                    h.title.as_deref().unwrap_or("(untitled)"),
+                    h.score,
+                    h.source.as_deref().unwrap_or("unknown")
+                );
+                println!("   {}", truncate(&h.content, 120));
+                if !h.tags.is_empty() {
+                    println!("   Tags: {:?}", h.tags);
+                }
+            }
+            println!("{} KP results (mode: {})", hits.len(), mode);
+        }
+    }
     Ok(())
 }
 

@@ -32,6 +32,34 @@ notification (protocol violation); `initialize` hardcodes
 
 - MCP clients can rely on tool listings and distinguish failures from
   successes.
-- `cerebro_kp_search` remaining unimplemented while documented is a
-  temporary, recorded exception — Phase B tripwire per ADR 0003.
 - Any future tool addition requires a README table update in the same PR.
+
+---
+
+## Addendum (2026-11-07): KP contract verified, `cerebro_kp_search` shipped
+
+The gate condition of this ADR is satisfied: the KP API contract was verified
+against KP source at commit `82775ae`
+(`src/knowledge_palace/api/app.py`, `src/knowledge_palace/api/models.py`):
+
+- `GET /api/v1/health` → `{"status": "ok"}`
+- `GET /api/v1/search?q=…&mode=semantic|keyword|hybrid&limit=1..100`
+  (optional `source`/`author` filters) → `{total, mode, query, results:
+  [{chunk_id, document_id, content, score, title, author, source, tags,
+  highlights, provenance}]}`
+
+Accordingly:
+
+- `cerebro_kp_search` is implemented (10th MCP tool) with modes
+  semantic/keyword/hybrid and graceful fallback to local FTS when KP is
+  disabled or unreachable (fallback explicitly labeled `local_fts`).
+- The KP connector's response parsing now uses the verified shape
+  (title/source/tags/chunk_id/document_id carried through); URL building
+  uses reqwest `.query()` percent-encoding (fixes grill finding F11).
+- CLI gained `cerebro kp search|health` (the plan's promised surface).
+- Connector tests run against a stub server mirroring the verified shape,
+  including wire-level percent-encoding assertions.
+- Residual caveat: end-to-end against a LIVE KP instance is still untested
+  (no KP running at implementation time); the stub mirrors the contract
+  read from KP's source, which is the best available ground truth until
+  then.
