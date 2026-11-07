@@ -1,11 +1,10 @@
 # Open Items — updated after grill round 1 (2026-11-06)
 
-Status: **AWAITING GO.** Round-1 verdicts are decided and recorded (ADRs
-0003–0005). The closing GO round (execute Phase A build queue) ended
-unanswered (timeout) on 2026-11-06 — per grill rules this is NOT a GO; no
-code changes may be executed from this state alone. Any owner message saying
-"go" (with or without qualification, e.g. "go but pause after item 1")
-counts as the GO and resumes execution from the queue below.
+Status: **GO RECEIVED 2026-11-07 — Phase A queue EXECUTED on branch
+`barczynski/grill-2026-11-06`.** Items 1–5 implemented, 79 tests green,
+defect battery re-verified live. Remaining open item: KP contract
+verification (needs KP repo or live :8080) before `cerebro_kp_search`.
+Owner merges the branch.
 
 ## Decided (see ADRs)
 

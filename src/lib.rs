@@ -11,7 +11,6 @@ pub mod kp;
 pub mod links;
 pub mod mcp;
 pub mod parser;
-pub mod publish;
 pub mod search;
 pub mod storage;
 pub mod sync;

@@ -39,12 +39,12 @@
   with automatic keyword-based links between notes
 - **Keyboard shortcuts help** — press `?` (or the **?** toolbar button) anytime
 - **Knowledge Palace connector** — semantic/RAG search via pgvector at `localhost:8080`
-- **Confluence publisher** — markdown → Confluence Storage Format → REST API
 - **Git sync** — automatic version control for vaults
-- **MCP server** — 10 tools via JSON-RPC over stdio for Copilot, Hermes, and other MCP clients
+- **MCP server** — JSON-RPC 2.0 over stdio for Copilot, Hermes, and other MCP clients
 - **Tauri 2.0 GUI** — native desktop app (macOS + Linux), dark theme, split-pane layout
 - **CLI** — full command-line interface for scripting and automation
-- **Encryption-ready** — AES-256-GCM profile encryption support
+- **Encryption (planned)** — AES-256-GCM per-profile encryption; dependencies
+  included, implementation in progress
 
 ## Installation
 
@@ -72,10 +72,9 @@ cerebro/
 │   ├── parser/                   # Markdown parsing, frontmatter, wikilinks
 │   ├── import/                   # PDF/PPTX/DOCX/XLSX/ODT/HTML → Markdown
 │   ├── links/                    # petgraph bidirectional link graph
-│   ├── search/                   # Full-text search wrapper
+│   ├── search/                   # SQLite FTS5 full-text search wrapper
 │   ├── mcp/                      # MCP server (JSON-RPC 2.0 over stdio)
 │   ├── kp/                       # Knowledge Palace HTTP connector
-│   ├── publish/                  # Confluence REST publisher
 │   ├── sync/                     # Git-based sync
 │   └── cli/                      # clap CLI interface
 ├── crates/gui/                   # Tauri 2.0 GUI application
@@ -177,7 +176,7 @@ the always-available cheat sheet. Highlights:
 
 ### MCP Tools (for AI coding tools)
 
-The MCP server exposes 10 tools over stdio:
+The MCP server exposes 9 tools over stdio (10th is gated — see footnote):
 
 | Tool | Description |
 |------|-------------|
@@ -189,8 +188,12 @@ The MCP server exposes 10 tools over stdio:
 | `cerebro_list_notes` | List notes, optionally filtered by tag |
 | `cerebro_list_tags` | List all tags with counts |
 | `cerebro_backlinks` | Get notes linking to a given note |
-| `cerebro_graph` | Get the full knowledge graph |
-| `cerebro_kp_search` | Semantic search via Knowledge Palace |
+| `cerebro_graph` | Get the full knowledge graph (nodes + edges) |
+
+> `cerebro_kp_search` ships once the Knowledge Palace API contract is
+> verified against KP's source (ADR 0005) — not before. Unknown tools return
+> a JSON-RPC error; tool failures set `isError: true`; the server speaks
+> protocol versions 2024-11-05 through 2025-06-18.
 
 ## Configuration
 

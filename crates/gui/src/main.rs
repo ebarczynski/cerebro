@@ -1,7 +1,7 @@
 //! Cerebro GUI — Tauri 2.0 desktop application.
 //!
 //! Exposes the Cerebro core library (storage, search, links, tags,
-//! Knowledge Palace connector, Confluence publisher) as Tauri commands
+//! Knowledge Palace connector) as Tauri commands
 //! consumed by the React/TypeScript frontend.
 
 use std::path::{Path, PathBuf};
