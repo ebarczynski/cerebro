@@ -47,3 +47,45 @@ construction; relocking shrinks, never eliminates, that window.
 - A forgotten passphrase with no cached Keychain copy means permanent
   loss of that vault's contents. The enable-time flow must state this and
   the recovery stance (pending round 2).
+
+---
+
+## Addendum — round 2 (2026-11-07): owner corrections + convenience guardrail
+
+The owner corrected this ADR in round 2. Two changes are **dated
+corrections** of the round-1 text; the rest settles the pending params.
+
+**Correction 1 — kind-informed defaults replace "all vaults when enabled".**
+Encryption is OPTIONAL per vault and stays optional: Business vaults get
+protection enabled by default (recommended at creation); **Personal and
+Project vaults are plaintext by default** and encrypt only when the owner
+explicitly enables it. The round-1 "no kind-based defaults" sentence is
+superseded by this one.
+
+**Correction 2 — no idle relock.** The session does NOT relock after idle
+time. Relock happens on system sleep and via manual lock
+(`cerebro lock` / GUI button) only. Simplicity beats hardening here.
+
+**Overriding design principle (owner's words, binding):** encryption is
+optional and must never cripple Cerebro or make daily work inconvenient.
+When protection is off, behavior is byte-for-byte identical to today; when
+on, the entire friction budget is: passphrase at session unlock, relock on
+sleep/manual. Anything beyond that budget needs a new owner decision.
+
+**Settled mechanics:**
+- SQLCipher (`bundled-sqlcipher`) for db.sqlite — `PRAGMA key` from the
+  vault master key.
+- Per-file AES-256-GCM for notes: each `.md` becomes ciphertext with its
+  own nonce and a small header (magic, version, salt info).
+- The master key's wrapped copies (passphrase wrap + optional macOS
+  Keychain handle), salt, and Argon2id parameters live in `vault.toml`.
+- The passphrase is the ONLY root credential. There is NO recovery code
+  and NO recovery path; enable-time flow warns loudly that a forgotten
+  passphrase means permanent loss. TouchID stays an optional convenience
+  wrapper around the cached key (round-1 decision) — it is convenience,
+  never a second way in, and never a recovery mechanism.
+- Enable/migrate: `cerebro vault encrypt <name>` (re-encrypts notes,
+  rebuilds the database as SQLCipher, keeps a pre-flight backup directory)
+  and `cerebro vault decrypt`; GUI toggle equivalent. Git sync pushes
+  ciphertext as-is.
+

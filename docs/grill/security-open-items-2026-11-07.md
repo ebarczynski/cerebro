@@ -1,48 +1,44 @@
 # Security design — open items (2026-11-07)
 
-Status: **AWAITING OWNER INPUT — round 2 timed out unanswered.** Round-1
-verdicts are settled (ADRs 0006–0008). The five round-2 questions below are
-proposals, NOT decisions; no implementation may start from this file alone.
-Any of them answered in chat counts as the decision.
+Status: **ROUND 2 SETTLED — design complete, awaiting GO.** All five
+round-2 decisions recorded in ADR 0006/0007 addenda. One interpretation
+flagged for confirmation at GO (see below).
 
-## Round-1 verdicts (recorded)
+## All decisions (round 1 + round 2)
 
 - Threat model: disk theft + AI over-read via MCP IN; root/memory/forensics OUT.
-- Encryption: per-vault enablement, but ALL vaults fully encrypted when
-  enabled (owner reversed the Business-default proposal — no kind-based
-  defaults).
-- Unlock: Argon2id passphrase always; macOS optional Keychain+TouchID cache.
-- MCP: per-profile policies + CLI scope override + audit journal; locked
-  vault = invisible to MCP.
-- Contexts: profiles are the isolation unit; VaultKind gains Project.
+- Encryption OPTIONAL per vault — the owner's binding constraint: it must
+  never cripple Cerebro or add friction. Off = byte-identical behavior.
+- Defaults: Business vaults protected by default; Personal and Project
+  vaults plaintext by default, opt-in per vault (round-2 correction of the
+  round-1 reversal — the owner's original intent).
+- Mechanics: SQLCipher for db, per-file AES-256-GCM for notes, wrapped
+  keys in vault.toml (Q6 yes).
+- Relock: sleep + manual ONLY; no idle relock (Q7 correction).
+- Recovery: none — passphrase is the only root credential, loud warning at
+  enable (Q8 "only password"). TouchID stays an optional convenience
+  wrapper, never a second way in.
+- Migration: `cerebro vault encrypt|decrypt` + GUI toggle; git pushes
+  ciphertext; encrypted vault loses Obsidian readability (Q9 yes).
+- MCP: per-profile policies (`none|read|write`) in config.toml +
+  `--scope` override; audit = ONE JSONL file, no rotation (Q10 simplified).
+- Contexts: profiles are the unit; VaultKind gains Project (ADR 0008).
 
-## Pending round-2 decisions (proposals attached)
+## Flagged interpretation (confirm at GO)
 
-1. **Crypto mechanics** — proposal: SQLCipher for db.sqlite
-   (`bundled-sqlcipher`), per-file AES-256-GCM for .md (own nonce + header
-   per file, git-friendly), wrapped master-key copies + salt + Argon2id
-   params stored in vault.toml.
-2. **Relock lifecycle** — proposal: 15 min idle relock (configurable),
-   relock on system sleep, manual `cerebro lock` + GUI button.
-3. **Forgotten passphrase** — proposal: loud unrecoverable warning + optional
-   one-time 32-char recovery code with its own Argon2id wrap of the master
-   key.
-4. **Enable/migration flow** — proposal: `cerebro vault encrypt|decrypt
-   <name>` + GUI toggle; git sync pushes ciphertext; encrypted vault loses
-   Obsidian readability, documented.
-5. **MCP policy + audit schema** — proposal: `[mcp.profiles.<name>]`
-   allow = none|read|write (+ optional tool deny-list) in config.toml;
-   `cerebro mcp --scope <profile>:<level>` session override; audit =
-   append-only JSONL `~/.cerebro/audit/mcp-YYYYMM.jsonl` (ts, tool,
-   profile, decision, reason — never note content), rotated monthly.
+"3. only password" was read as: no recovery-code mechanism — the
+passphrase is the only credential (Q8 option b). TouchID/Keychain caching
+from round 1 remains an OPTIONAL convenience, not a credential. If you
+meant "drop TouchID entirely," say so — that removes the macOS Keychain
+work item from the queue.
 
-## Build queue (draft, on round-2 completion)
+## Build queue (priority order, on GO)
 
-1. Crypto core: key hierarchy, SQLCipher migration, per-file GCM, vault
-   encrypt/decrypt commands + tests (including wrong-passphrase and
-   truncation/corruption cases).
-2. Unlock lifecycle: session state, relock timers, Keychain/TouchID path
-   (macOS), GUI lock UI.
-3. MCP policies + audit journal + locked-invisible semantics + tests.
+1. Crypto core: key hierarchy, SQLCipher migration, per-file GCM format,
+   `cerebro vault encrypt|decrypt|lock|unlock` + tests (wrong passphrase,
+   truncated/corrupt file, reindex-inside-session, decrypt round-trip).
+2. Unlock lifecycle: session state, sleep/manual relock, macOS
+   Keychain+TouchID optional path, GUI lock button + unlock prompt.
+3. MCP policies + audit JSONL + locked-invisible semantics + tests.
 4. VaultKind::Project + GUI tag support.
-5. README/docs security section.
+5. README security section + vault.toml docs.

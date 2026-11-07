@@ -39,3 +39,25 @@ semi-trusted.
   clients can react instead of guessing.
 - The audit journal is itself sensitive (it reveals content patterns) and
   lives under the user's config dir with user-only permissions.
+
+---
+
+## Addendum — round 2 (2026-11-07): audit simplified
+
+The owner questioned the monthly rotation: "why monthly audit? keep it
+simple." Accepted — the audit journal is the SIMPLEST useful form:
+
+- **One** append-only JSONL file: `~/.cerebro/audit/mcp.jsonl`. No
+  rotation, no retention machinery, no size management. If it grows too
+  big, the owner deletes it — that's the retention policy.
+- Fields per line: timestamp, tool name, profile addressed, decision
+  (allow/deny), reason. Never note content.
+- Policy schema: `[mcp.profiles.<name>]` in config.toml with
+  `allow = "none" | "read" | "write"` (optional tool deny-list);
+  `cerebro mcp --scope <profile>:<level>` overrides for the session;
+  default remains active-profile read-only.
+- Same simplicity principle as ADR 0006's addendum: the sandbox must not
+  add friction for the common single-vault, local-client case — with no
+  policy declared, behavior is exactly today's, plus one audit line per
+  call.
+
