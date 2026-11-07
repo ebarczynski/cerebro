@@ -52,7 +52,7 @@ impl GitSync {
         // Create .gitignore for cerebro internals
         let gitignore = self.vault_path.join(".gitignore");
         if !gitignore.exists() {
-            std::fs::write(&gitignore, "# Cerebro internals\ndb.sqlite\ntantivy/\n.cerebro/\n")?;
+            std::fs::write(&gitignore, "# Cerebro internals\ndb.sqlite\n.cerebro/\n")?;
         }
 
         if let Some(remote) = &self.config.remote {

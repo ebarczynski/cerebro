@@ -1,5 +1,12 @@
 # Cerebro — Personal Knowledge Base Application
 
+> **⚠️ Status (2026-11-06):** this plan is PARTIALLY SUPERSEDED by ADRs
+> 0001–0005 and the grill audit (`docs/grill/2026-11-06-design-review.md`).
+> Notably: Tantivy was dropped (ADR 0002), the Confluence publisher was
+> removed (ADR 0004), the product is explicitly phased (ADR 0003), and the
+> MCP contract is defined in ADR 0005. Milestones below are historical
+> record, not the current backlog.
+
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** Build a fast, secure, local-first personal knowledge base application with dual modes (personal/professional), profile segregation, Knowledge Palace integration, MCP server for AI tool connectivity, and Confluence publishing — inspired by Obsidian but written in Rust.

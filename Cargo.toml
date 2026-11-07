@@ -1,6 +1,6 @@
 [package]
 name = "cerebro"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.96.0"
 description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
@@ -44,10 +44,8 @@ argon2 = "0.5"
 # Graph
 petgraph = "0.7"
 
-# HTTP (KP connector, Confluence, MCP HTTP)
+# HTTP (KP connector)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
 
 # Utilities
 uuid = { version = "1", features = ["v7", "serde"] }

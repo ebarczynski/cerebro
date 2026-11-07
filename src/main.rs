@@ -1,8 +1,7 @@
 //! Cerebro — A fast, secure, local-first personal knowledge base.
 //!
 //! Dual-profile vaults, markdown notes, bidirectional link graph,
-//! full-text search, Knowledge Palace connector, MCP server,
-//! and Confluence publishing.
+//! full-text search, Knowledge Palace connector, and MCP server.
 
 use clap::Parser;
 

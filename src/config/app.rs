@@ -44,27 +44,6 @@ impl Default for KnowledgePalaceConfig {
     }
 }
 
-/// Confluence integration settings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ConfluenceConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub space_key: String,
-}
-
-impl Default for ConfluenceConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            base_url: String::new(),
-            space_key: String::new(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Global Config struct
 // ---------------------------------------------------------------------------
@@ -94,10 +73,6 @@ pub struct Config {
     /// Knowledge Palace integration settings.
     #[serde(default)]
     pub knowledge_palace: KnowledgePalaceConfig,
-
-    /// Confluence integration settings.
-    #[serde(default)]
-    pub confluence: ConfluenceConfig,
 }
 
 fn default_profile() -> String {
@@ -148,7 +123,6 @@ impl Config {
             profiles_dir: default_profiles_dir(),
             active_profile: None,
             knowledge_palace: KnowledgePalaceConfig::default(),
-            confluence: ConfluenceConfig::default(),
         })
     }
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -162,9 +162,10 @@ impl Storage {
         tags: Option<Vec<String>>,
     ) -> Result<Note> {
         let id = Uuid::now_v7().to_string();
-        let relative_path = path
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| self.sanitize_path(title));
+        let relative_path = match path {
+            Some(p) => self.validate_note_path(p, title)?,
+            None => self.sanitize_path(title),
+        };
         let file_path = self.notes_dir.join(&relative_path);
 
         // Ensure parent directory exists
@@ -292,6 +293,13 @@ impl Storage {
         self.db
             .execute("DELETE FROM note_tags WHERE note_id = ?1", params![note.id])?;
         self.update_tag_counts(&note.id, &combined_tags)?;
+        // Derive counts from note_tags instead of trusting the increment
+        // fast-path above (grill finding F5).
+        let mut affected = note.tags.clone();
+        affected.extend(combined_tags.iter().cloned());
+        affected.sort();
+        affected.dedup();
+        self.refresh_tag_counts(&affected)?;
 
         Ok(Note {
             id: note.id,
@@ -334,6 +342,14 @@ impl Storage {
             "DELETE FROM links WHERE source_id = ?1 OR target_id = ?1",
             params![note.id],
         )?;
+
+        // Remove tag associations and recompute affected tag counts
+        // (grill finding F5: counts previously stayed inflated forever)
+        self.db.execute(
+            "DELETE FROM note_tags WHERE note_id = ?1",
+            params![note.id],
+        )?;
+        self.refresh_tag_counts(&note.tags)?;
 
         Ok(())
     }
@@ -592,6 +608,16 @@ impl Storage {
             }
         }
 
+        // Full recount after a bulk pass — counts are always derived from
+        // note_tags (grill finding F5).
+        let all_tags: Vec<String> = self
+            .db
+            .prepare("SELECT name FROM tags")?
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        self.refresh_tag_counts(&all_tags)?;
+
         Ok(stats)
     }
 
@@ -660,6 +686,55 @@ impl Storage {
         Ok(links)
     }
 
+    // ── Graph ─────────────────────────────────────────────────────
+
+    /// Full knowledge graph (nodes + edges) for the current profile.
+    /// Nodes are non-deleted notes; edges keep unresolved targets as
+    /// `target_id: None` with the raw `target_ref` so clients can render
+    /// broken links (feeds the `cerebro_graph` MCP tool, ADR 0005).
+    pub fn get_graph(&self) -> Result<(Vec<Note>, Vec<Link>)> {
+        let notes = self.list_notes(None, 100_000, 0)?;
+        let live_ids: std::collections::HashSet<&str> =
+            notes.iter().map(|n| n.id.as_str()).collect();
+
+        let mut edges: Vec<Link> = self
+            .db
+            .prepare(
+                "SELECT source_id, target_id, target_ref, context, line_number
+                 FROM links",
+            )?
+            .query_map([], |row| {
+                Ok(Link {
+                    source_id: row.get(0)?,
+                    target_id: row.get(1)?,
+                    target_ref: row.get(2)?,
+                    context: row.get(3)?,
+                    line_number: row.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|l| live_ids.contains(l.source_id.as_str()))
+            .map(|l| {
+                let target_live = l
+                    .target_id
+                    .as_deref()
+                    .map(|t| live_ids.contains(t))
+                    .unwrap_or(false);
+                if target_live {
+                    l
+                } else {
+                    Link {
+                        target_id: None,
+                        ..l
+                    }
+                }
+            })
+            .collect();
+
+        edges.sort_by(|a, b| a.source_id.cmp(&b.source_id));
+        Ok((notes, edges))
+    }
+
     // ── Category & Favorites ──────────────────────────────────────
 
     pub fn set_category(&self, note_id: &str, category: Option<&str>) -> Result<()> {
@@ -681,13 +756,63 @@ impl Storage {
     // ── Internal helpers ──────────────────────────────────────────
 
     fn find_note(&self, identifier: &str) -> Result<Note> {
-        // Try by ID first, then title, then path
-        self.db.query_row(
-            "SELECT id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at, category, is_favorite
-             FROM notes WHERE (id = ?1 OR title = ?1 OR path LIKE ?2) AND deleted_at IS NULL",
-            params![identifier, format!("%{}%", identifier)],
+        let columns = "id, title, path, content_hash, frontmatter, tags, word_count, created_at, updated_at, category, is_favorite";
+
+        // 1. Exact ID
+        if let Ok(note) = self.db.query_row(
+            &format!("SELECT {columns} FROM notes WHERE id = ?1 AND deleted_at IS NULL"),
+            params![identifier],
             note_from_row,
-        ).map_err(|_| anyhow!("note not found: {}", identifier))
+        ) {
+            return Ok(note);
+        }
+        // 2. Exact title
+        if let Ok(note) = self.db.query_row(
+            &format!("SELECT {columns} FROM notes WHERE title = ?1 AND deleted_at IS NULL"),
+            params![identifier],
+            note_from_row,
+        ) {
+            return Ok(note);
+        }
+        // 3. Exact path
+        if let Ok(note) = self.db.query_row(
+            &format!("SELECT {columns} FROM notes WHERE path = ?1 AND deleted_at IS NULL"),
+            params![identifier],
+            note_from_row,
+        ) {
+            return Ok(note);
+        }
+        // 4. Substring match — only when it is UNAMBIGUOUS. Feeding a fuzzy
+        // first-row match into update/delete can hit the wrong note
+        // (grill finding F8).
+        let pattern = format!("%{}%", identifier);
+        let matches: Vec<Note> = self
+            .db
+            .prepare(&format!(
+                "SELECT {columns} FROM notes WHERE (title LIKE ?1 OR path LIKE ?1)
+                 AND deleted_at IS NULL LIMIT 50"
+            ))?
+            .query_map(params![pattern], note_from_row)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        match matches.len() {
+            0 => Err(anyhow!("note not found: {}", identifier)),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            n => {
+                let mut candidates: Vec<String> = matches
+                    .iter()
+                    .map(|m| format!("'{}' ({})", m.title, m.path))
+                    .collect();
+                candidates.truncate(5);
+                Err(anyhow!(
+                    "ambiguous identifier '{}' matches {} notes; be specific (use ID, exact title, or exact path). Candidates: {}",
+                    identifier,
+                    n,
+                    candidates.join(", ")
+                ))
+            }
+        }
     }
 
     fn note_rowid(&self, id: &str) -> Result<i64> {
@@ -706,7 +831,14 @@ impl Storage {
         wikilinks: &[crate::parser::Wikilink],
         content: &str,
     ) -> Result<()> {
+        // The links table enforces UNIQUE(source_id, target_ref, line_number):
+        // referencing the same target twice on one line must produce one edge,
+        // not a constraint failure (grill finding F2).
+        let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
         for wl in wikilinks {
+            if !seen.insert((wl.target.clone(), wl.line_number)) {
+                continue;
+            }
             // Try to resolve the target note
             let target_id = self.resolve_target(&wl.target);
             let context = extract_link_context(content, wl.line_number);
@@ -720,14 +852,47 @@ impl Storage {
         Ok(())
     }
 
+    /// Resolve a wikilink target to a note ID. Exact title, then exact path,
+    /// then a UNIQUE substring match; ambiguity resolves to nothing rather
+    /// than an arbitrary note (grill finding F8).
     fn resolve_target(&self, target: &str) -> Option<String> {
-        self.db
+        if let Ok(id) = self
+            .db
             .query_row(
-                "SELECT id FROM notes WHERE (title = ?1 OR path LIKE ?2) AND deleted_at IS NULL",
-                params![target, format!("%{}%", target)],
+                "SELECT id FROM notes WHERE title = ?1 AND deleted_at IS NULL",
+                params![target],
                 |row| row.get(0),
             )
-            .ok()
+        {
+            return Some(id);
+        }
+        if let Ok(id) = self
+            .db
+            .query_row(
+                "SELECT id FROM notes WHERE path = ?1 AND deleted_at IS NULL",
+                params![target],
+                |row| row.get(0),
+            )
+        {
+            return Some(id);
+        }
+        let pattern = format!("%{}%", target);
+        let matches: Vec<String> = self
+            .db
+            .prepare(
+                "SELECT id FROM notes WHERE (title LIKE ?1 OR path LIKE ?1)
+                 AND deleted_at IS NULL LIMIT 2",
+            )
+            .ok()?
+            .query_map(params![pattern], |row| row.get(0))
+            .ok()?
+            .filter_map(|r| r.ok())
+            .collect();
+        if matches.len() == 1 {
+            Some(matches.into_iter().next().unwrap())
+        } else {
+            None
+        }
     }
 
     fn update_tag_counts(&self, note_id: &str, tags: &[String]) -> Result<()> {
@@ -746,6 +911,26 @@ impl Storage {
         Ok(())
     }
 
+    /// Recompute `note_count` for the given tags from `note_tags`, counting
+    /// only non-deleted notes, and drop tags that no longer have any notes.
+    ///
+    /// Counters must be derived, never incremented blindly: update/delete
+    /// paths previously left counts inflated forever (grill finding F5).
+    fn refresh_tag_counts(&self, tags: &[String]) -> Result<()> {
+        for tag in tags {
+            self.db.execute(
+                "UPDATE tags SET note_count = (
+                    SELECT COUNT(*) FROM note_tags nt
+                    JOIN notes n ON n.id = nt.note_id
+                    WHERE nt.tag = ?1 AND n.deleted_at IS NULL
+                ) WHERE name = ?1",
+                params![tag],
+            )?;
+        }
+        self.db.execute("DELETE FROM tags WHERE note_count = 0", [])?;
+        Ok(())
+    }
+
     fn sanitize_path(&self, title: &str) -> String {
         let safe: String = title
             .chars()
@@ -758,6 +943,67 @@ impl Storage {
             })
             .collect();
         format!("{}.md", safe)
+    }
+
+    /// Normalize and validate a user-supplied note path.
+    ///
+    /// The resolved path must stay inside the vault's notes directory (no
+    /// `..` traversal, no absolute paths) and must name a `.md` file:
+    /// directory-like inputs (trailing `/`, no extension) get a filename
+    /// derived from the title appended.
+    fn validate_note_path(&self, raw: &str, title: &str) -> Result<String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(self.sanitize_path(title));
+        }
+        let path = Path::new(raw);
+        if path.is_absolute() {
+            return Err(anyhow!(
+                "note path must be relative to the vault notes directory: {}",
+                raw
+            ));
+        }
+
+        // Containment: after cancelling `.`/`..` components, depth must
+        // never go above the notes root.
+        let mut depth: i32 = 0;
+        for comp in path.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return Err(anyhow!(
+                            "note path escapes the vault notes directory: {}",
+                            raw
+                        ));
+                    }
+                }
+                Component::Normal(_) => depth += 1,
+                _ => {
+                    return Err(anyhow!("invalid path component in: {}", raw));
+                }
+            }
+        }
+
+        let cleaned: String = path
+            .components()
+            .filter(|c| !matches!(c, Component::CurDir))
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+
+        // Directory-like or extension-less input -> append filename from title
+        if cleaned.ends_with('/') || Path::new(&cleaned).extension().is_none() {
+            let dir = cleaned.trim_end_matches('/');
+            let file = self.sanitize_path(title);
+            if dir.is_empty() {
+                return Ok(file);
+            }
+            return Ok(format!("{}/{}", dir, file));
+        }
+
+        Ok(cleaned)
     }
 }
 
@@ -819,9 +1065,16 @@ fn strip_yaml_frontmatter(content: &str) -> String {
     content.to_string()
 }
 
-fn extract_link_context(content: &str, _position: usize) -> Option<String> {
-    // Extract the line containing the link
-    content.lines().find(|line| line.contains("[[")).map(|s| s.trim().to_string())
+fn extract_link_context(content: &str, line_number: usize) -> Option<String> {
+    // 1-indexed line number from the wikilink parser; return THAT line's text,
+    // not the first line that happens to contain a link (grill finding F6).
+    if line_number == 0 {
+        return None;
+    }
+    content
+        .lines()
+        .nth(line_number - 1)
+        .map(|s| s.trim().to_string())
 }
 
 fn walk_md_files(dir: &Path) -> Result<Vec<PathBuf>> {

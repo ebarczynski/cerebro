@@ -21,8 +21,6 @@ pub mod error;
 pub mod profile;
 
 // Public re-exports for ergonomic access.
-pub use app::{Config, ConfluenceConfig, KnowledgePalaceConfig};
+pub use app::{Config, KnowledgePalaceConfig};
 pub use error::{ConfigError, Result};
-pub use profile::{
-    ConfluenceSection, KnowledgePalaceSection, ProfileConfig, SyncMethod, SyncSection, VaultKind,
-};
+pub use profile::{KnowledgePalaceSection, ProfileConfig, SyncMethod, SyncSection, VaultKind};

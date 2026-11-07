@@ -105,13 +105,10 @@ pub enum Commands {
     /// Start MCP server (stdio)
     Mcp,
 
-    /// Publish a note to Confluence
-    Publish {
-        /// Note title, path, or ID
-        identifier: String,
-        /// Dry run (show HTML without publishing)
-        #[arg(long)]
-        dry_run: bool,
+    /// Knowledge Palace semantic search
+    Kp {
+        #[command(subcommand)]
+        action: KpCommands,
     },
 
     /// Sync vault with Git remote
@@ -200,6 +197,23 @@ pub enum SyncCommands {
     Pull,
 }
 
+#[derive(Subcommand)]
+pub enum KpCommands {
+    /// Search via Knowledge Palace (falls back to local FTS if KP is down)
+    Search {
+        /// Search query
+        query: String,
+        /// Search mode: semantic, keyword, hybrid
+        #[arg(long, default_value = "hybrid")]
+        mode: String,
+        /// Maximum results
+        #[arg(long, short, default_value = "5")]
+        limit: i64,
+    },
+    /// Check KP reachability
+    Health,
+}
+
 // ── CLI Runner ───────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -264,9 +278,9 @@ pub fn run(cli: Cli) -> Result<()> {
             cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
         Commands::Mcp => crate::mcp::McpServer::run(config),
-        Commands::Publish { identifier, dry_run } => {
+        Commands::Kp { action } => {
             let storage = open_storage(&config, profile_name)?;
-            cmd_publish(&storage, &identifier, dry_run)
+            cmd_kp(&config, &storage, action)
         }
         Commands::Sync { action } => {
             cmd_sync(&config, profile_name, action)
@@ -582,14 +596,67 @@ fn cmd_import(
     Ok(())
 }
 
-fn cmd_publish(storage: &Storage, identifier: &str, dry_run: bool) -> Result<()> {
-    let nc = storage.read_note(identifier)?;
-    println!("Publishing '{}' to Confluence...", nc.note.title);
-    if dry_run {
-        println!("DRY RUN - HTML preview:");
-        println!("{}", nc.body);
-    } else {
-        println!("Note: Confluence publishing requires configuration. Run with --dry-run first.");
+fn cmd_kp(config: &Config, storage: &Storage, action: KpCommands) -> Result<()> {
+    let kp_config = crate::kp::KpConfig {
+        enabled: config.knowledge_palace.enabled,
+        endpoint: if config.knowledge_palace.endpoint.is_empty() {
+            "http://localhost:8080".to_string()
+        } else {
+            config.knowledge_palace.endpoint.clone()
+        },
+    };
+    let connector = crate::kp::KpConnector::new(kp_config);
+
+    // KP calls are async; the CLI loop is sync — same throwaway-runtime
+    // pattern as the MCP server.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    match action {
+        KpCommands::Health => {
+            let healthy = rt.block_on(connector.health_check())?;
+            if healthy {
+                println!("✓ Knowledge Palace healthy at {}", config.knowledge_palace.endpoint);
+            } else if !config.knowledge_palace.enabled {
+                println!("✗ Knowledge Palace integration is disabled in config.toml");
+            } else {
+                println!("✗ Knowledge Palace unreachable at {}", config.knowledge_palace.endpoint);
+            }
+        }
+        KpCommands::Search { query, mode, limit } => {
+            let hits = match rt.block_on(connector.search_with_mode(&query, &mode, limit)) {
+                Ok(h) => h,
+                Err(e) => {
+                    println!("⚠ KP unavailable ({}); falling back to local FTS", e);
+                    let local = storage.search(&query, limit)?;
+                    for (i, r) in local.iter().enumerate() {
+                        println!("{}. {} [{}] (score: {:.4})", i + 1, r.title, r.path, r.rank);
+                        println!("   {}", truncate(&r.snippet, 100));
+                    }
+                    println!("{} local results", local.len());
+                    return Ok(());
+                }
+            };
+            if hits.is_empty() {
+                println!("No KP results for '{}'.", query);
+                return Ok(());
+            }
+            for (i, h) in hits.iter().enumerate() {
+                println!(
+                    "{}. {} (score: {:.3}, source: {})",
+                    i + 1,
+                    h.title.as_deref().unwrap_or("(untitled)"),
+                    h.score,
+                    h.source.as_deref().unwrap_or("unknown")
+                );
+                println!("   {}", truncate(&h.content, 120));
+                if !h.tags.is_empty() {
+                    println!("   Tags: {:?}", h.tags);
+                }
+            }
+            println!("{} KP results (mode: {})", hits.len(), mode);
+        }
     }
     Ok(())
 }
@@ -654,9 +721,54 @@ fn edit_in_editor(content: &str, editor: &str) -> Result<String> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max - 1])
+        return s.to_string();
+    }
+    // Cut on a CHAR boundary, never mid-multibyte-character — byte slicing
+    // at an arbitrary offset panicked on Polish/Cyrillic titles
+    // (grill finding F3).
+    let mut cut = max.saturating_sub(1);
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &s[..cut])
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate;
+
+    #[test]
+    fn ascii_truncated_with_ellipsis() {
+        assert_eq!(truncate("hello world this is long", 10), "hello wor…");
+    }
+
+    #[test]
+    fn short_string_untouched() {
+        assert_eq!(truncate("short", 10), "short");
+    }
+
+    #[test]
+    fn polish_title_does_not_panic() {
+        // Grill finding F3: byte 37 previously landed inside 'ą'
+        let title = format!("{}ąąą longer title", "a".repeat(36));
+        let out = truncate(&title, 38);
+        assert!(out.ends_with('…'));
+        assert!(out.len() < title.len());
+    }
+
+    #[test]
+    fn emoji_cut_is_char_safe() {
+        let s = "🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀";
+        let out = truncate(s, 10);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn zero_max_is_empty() {
+        assert_eq!(truncate("anything", 0), "");
     }
 }

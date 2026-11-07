@@ -89,27 +89,6 @@ impl Default for KnowledgePalaceSection {
     }
 }
 
-/// Confluence integration settings for a profile.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ConfluenceSection {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub space_key: String,
-}
-
-impl Default for ConfluenceSection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            base_url: String::new(),
-            space_key: String::new(),
-        }
-    }
-}
-
 /// Sync settings for a profile vault.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncSection {
@@ -170,10 +149,6 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub knowledge_palace: KnowledgePalaceSection,
 
-    /// Confluence integration.
-    #[serde(default)]
-    pub confluence: ConfluenceSection,
-
     /// Synchronisation settings.
     #[serde(default)]
     pub sync: SyncSection,
@@ -199,7 +174,6 @@ impl ProfileConfig {
             encryption: false,
             kind: VaultKind::default(),
             knowledge_palace: KnowledgePalaceSection::default(),
-            confluence: ConfluenceSection::default(),
             sync: SyncSection::default(),
         }
     }
