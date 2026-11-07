@@ -41,11 +41,15 @@ pub fn extract_links_and_metadata(content: &str) -> ParsedNote {
         parse_frontmatter(&split.yaml_block)
     };
 
-    // 2. Extract wikilinks from body
-    let wikilinks = extract_wikilinks(&split.body);
+    // 2. Extract wikilinks and inline tags from the body with fenced code
+    // blocks blanked out: `[[links]]` and `#tags` inside code samples are
+    // code, not knowledge-graph edges (grill finding F7). Line numbers are
+    // preserved by replacing fence contents with empty lines.
+    let stripped = strip_fenced_code(&split.body);
+    let wikilinks = extract_wikilinks(&stripped);
 
     // 3. Extract inline tags from body
-    let inline_tags = extract_inline_tags(&split.body);
+    let inline_tags = extract_inline_tags(&stripped);
 
     // 4. Merge frontmatter tags with inline tags
     let tags = merge_tags(&fm.tags, &inline_tags);
@@ -97,6 +101,29 @@ fn extract_first_heading(body: &str) -> Option<String> {
     None
 }
 
+/// Blank out fenced code blocks while PRESERVING the line count, so line
+/// numbers extracted from the stripped text still map onto the original
+/// document (grill finding F7).
+fn strip_fenced_code(body: &str) -> String {
+    let mut out: Vec<&str> = Vec::with_capacity(body.lines().count());
+    let mut in_fence = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if in_fence {
+            if trimmed.starts_with("```") {
+                in_fence = false;
+            }
+            out.push("");
+        } else if trimmed.starts_with("```") {
+            in_fence = true;
+            out.push("");
+        } else {
+            out.push(line);
+        }
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +160,32 @@ See [[API Reference]] and [[Design Decisions|design]] for more.
         assert_eq!(parsed.title.as_deref(), Some("Just a Heading"));
         assert!(parsed.tags.contains(&"tagged".to_owned()));
         assert_eq!(parsed.wikilinks.len(), 1);
+    }
+
+    #[test]
+    fn links_inside_fenced_code_are_not_extracted() {
+        // Grill finding F7: `[[links]]` in code samples must not become
+        // knowledge-graph edges; links OUTSIDE the fence still are.
+        let doc = "Real [[Outside Link]] here.\n\n```rust\nlet s = \"[[Code Link]]\";\nlet t = fake();\n```\n\nAnother [[Second Real]] link.";
+        let parsed = extract_links_and_metadata(doc);
+        let targets: Vec<&str> = parsed.wikilinks.iter().map(|w| w.target.as_str()).collect();
+        assert!(targets.contains(&"Outside Link"));
+        assert!(targets.contains(&"Second Real"));
+        assert!(!targets.contains(&"Code Link"));
+        // Line numbers must still map onto the original document
+        let second = parsed
+            .wikilinks
+            .iter()
+            .find(|w| w.target == "Second Real")
+            .unwrap();
+        assert_eq!(second.line_number, 8);
+    }
+
+    #[test]
+    fn tags_inside_fenced_code_are_not_extracted() {
+        let doc = "Real #realtag here\n\n```bash\necho \"#faketag\"\n```";
+        let parsed = extract_links_and_metadata(doc);
+        assert!(parsed.tags.contains(&"realtag".to_owned()));
+        assert!(!parsed.tags.contains(&"faketag".to_owned()));
     }
 }
