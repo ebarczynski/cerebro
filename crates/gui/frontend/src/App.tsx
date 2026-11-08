@@ -722,8 +722,8 @@ function CreateVaultModal({
         <label className="block text-xs font-semibold uppercase tracking-wider text-[#8888a0] mb-1.5 mt-4">
           Type
         </label>
-        <div className="grid grid-cols-2 gap-2">
-          {(["private", "business"] as VaultKindTag[]).map((k) => {
+        <div className="grid grid-cols-3 gap-2">
+          {(["private", "business", "project"] as VaultKindTag[]).map((k) => {
             const meta = VAULT_KIND_META[k];
             const selected = kind === k;
             return (
