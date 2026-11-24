@@ -58,6 +58,9 @@ jobs:
       - name: Run tests (workspace)
         run: cargo test --workspace
 
+      - name: Lint (no warnings allowed)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Build CLI (release)
         run: cargo build --release -p cerebro
 

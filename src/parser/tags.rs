@@ -34,7 +34,7 @@ pub fn extract_inline_tags(body: &str) -> Vec<String> {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix('#') {
             let pound_count = 1 + rest.chars().take_while(|c| *c == '#').count();
-            if pound_count >= 1 && pound_count <= 6 {
+            if (1..=6).contains(&pound_count) {
                 let after = &trimmed[pound_count..];
                 if after.starts_with(' ') || after.starts_with('\t') {
                     continue; // This is a heading line

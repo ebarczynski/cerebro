@@ -19,11 +19,18 @@ pub use wikilinks::{extract_transclusions, extract_wikilinks, Transclusion, Wiki
 pub struct ParsedNote {
     /// Title extracted from frontmatter, or first `# Heading` if absent.
     pub title: Option<String>,
+    /// The `title:` frontmatter field on its own, if the note has one.
+    ///
+    /// Unlike [`Self::title`] this never falls back to a heading: a note is
+    /// named by its `title:` field or by its file name, so callers that know
+    /// the file name use this and supply the fallback themselves.
+    pub explicit_title: Option<String>,
     /// Parsed frontmatter key-value pairs (all values as serde_json::Value strings).
     pub frontmatter: HashMap<String, Value>,
     /// All tags (merged from frontmatter + inline), normalized.
     pub tags: Vec<String>,
-    /// All wikilinks found in the note body.
+    /// All wikilinks found in the note body, with 1-indexed line numbers
+    /// counted from the top of the note (frontmatter included).
     pub wikilinks: Vec<Wikilink>,
     /// Body text with YAML frontmatter stripped.
     pub body_text: String,
@@ -46,7 +53,12 @@ pub fn extract_links_and_metadata(content: &str) -> ParsedNote {
     // code, not knowledge-graph edges (grill finding F7). Line numbers are
     // preserved by replacing fence contents with empty lines.
     let stripped = strip_fenced_code(&split.body);
-    let wikilinks = extract_wikilinks(&stripped);
+    let mut wikilinks = extract_wikilinks(&stripped);
+    // They were counted from the start of the body; the frontmatter sits
+    // above it in the file.
+    for link in &mut wikilinks {
+        link.line_number += split.line_offset;
+    }
 
     // 3. Extract inline tags from body
     let inline_tags = extract_inline_tags(&stripped);
@@ -77,6 +89,7 @@ pub fn extract_links_and_metadata(content: &str) -> ParsedNote {
 
     ParsedNote {
         title,
+        explicit_title: fm.title,
         frontmatter: frontmatter_map,
         tags,
         wikilinks,
@@ -90,7 +103,7 @@ fn extract_first_heading(body: &str) -> Option<String> {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix('#') {
             let pound_count = 1 + rest.chars().take_while(|c| *c == '#').count();
-            if pound_count >= 1 && pound_count <= 6 {
+            if (1..=6).contains(&pound_count) {
                 let heading = trimmed[pound_count..].trim();
                 if !heading.is_empty() {
                     return Some(heading.to_owned());

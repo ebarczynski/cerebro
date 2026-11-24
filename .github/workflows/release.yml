@@ -172,14 +172,17 @@ jobs:
 
           ## 🆕 New in this release
 
-          - 🎨 **New app icon** — minimal brain-circuit mark across macOS,
-            Windows and Linux, plus the in-app top bar, welcome screen and favicon.
+          See [CHANGELOG.md](https://github.com/ebarczynski/cerebro/blob/master/CHANGELOG.md).
 
           **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search
-          (FTS5) · automatic keyword links · Obsidian-style knowledge graph ·
-          💠 Obsidian vault import (folder structure, frontmatter tags, wikilinks) ·
-          document import (PDF/DOCX/XLSX/PPTX and more) · 🔒/💼 vaults with recents ·
-          keyboard shortcuts help (\`?\`) · MCP server · Confluence connector · CLI.
+          (FTS5) · auto-links between notes that share tags or title words ·
+          knowledge graph · 💠 Obsidian vault import (folder structure,
+          frontmatter tags, wikilinks) · document import (PDF/DOCX/PPTX/XLSX/
+          ODS/ODT/HTML and more) · 🔒/💼 vaults with recents · keyboard shortcuts
+          help (\`?\`) · MCP server · CLI · manual git sync.
+
+          Not included: encryption at rest. The GUI lists the 500 most recently
+          changed notes; search covers the whole vault.
 
           ## 🍎 macOS (Apple Silicon) — requires macOS 26 (Tahoe) or newer
 

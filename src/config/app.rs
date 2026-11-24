@@ -150,11 +150,8 @@ impl Config {
     /// Save the configuration to disk, creating parent directories as needed.
     pub fn save(&self) -> Result<()> {
         let path = config_path()?;
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| ConfigError::io(parent, e))?;
-            }
+        if let Some(parent) = path.parent().filter(|parent| !parent.exists()) {
+            fs::create_dir_all(parent).map_err(|e| ConfigError::io(parent, e))?;
         }
 
         let toml_str = toml::to_string_pretty(self)?;
@@ -202,10 +199,8 @@ impl Config {
 
     /// Save config to a specific path.
     pub fn save_to(&self, path: &std::path::Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| ConfigError::io(parent, e))?;
-            }
+        if let Some(parent) = path.parent().filter(|parent| !parent.exists()) {
+            fs::create_dir_all(parent).map_err(|e| ConfigError::io(parent, e))?;
         }
         let toml_str = toml::to_string_pretty(self)?;
         fs::write(path, toml_str).map_err(|e| ConfigError::io(path, e))?;
@@ -280,8 +275,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_default_profile() {
-        let mut cfg = Config::default();
-        cfg.default_profile = String::new();
+        let cfg = Config {
+            default_profile: String::new(),
+            ..Config::default()
+        };
         assert!(cfg.validate().is_err());
     }
 }

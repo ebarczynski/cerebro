@@ -84,7 +84,8 @@ pub enum Commands {
     /// Reindex all notes from filesystem
     Reindex,
 
-    /// Import a document (PDF, PPTX, ODS, HTML) as a note
+    /// Import a document as a note (PDF, DOCX, PPTX, XLSX, ODS, XLS, ODT, HTML,
+    /// Markdown, JSON, or a text/source file). Legacy .doc needs LibreOffice.
     Import {
         /// Path to the file to import
         file: PathBuf,
@@ -221,16 +222,20 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(path) => Config::load_from(path)?,
         None => Config::load_or_create()?,
     };
-
-    let profile_name = cli.profile.as_deref()
-        .or(config.active_profile.as_deref())
-        .unwrap_or(&config.default_profile);
+    // Where `profile switch` records its choice: the file this run loaded.
+    let config_file = match &cli.config {
+        Some(path) => path.clone(),
+        None => crate::config::app::config_path()?,
+    };
+    // The profile every vault command acts on. A profile named on the
+    // command line must exist; the default one is created on first use.
+    let requested = cli.profile.as_deref();
 
     match cli.command {
         Commands::Init { name } => cmd_init(&config, &name),
-        Commands::Profile { action } => cmd_profile(&config, action),
+        Commands::Profile { action } => cmd_profile(&config, action, &config_file),
         Commands::Notes(cmd) => {
-            let mut storage = open_storage(&config, profile_name)?;
+            let mut storage = config.open_storage(requested)?;
             match cmd {
                 NoteCommands::Create { title, path, tags, content } => {
                     cmd_note_create(&mut storage, &title, path.as_deref(), &tags, content.as_deref(), &config)
@@ -250,40 +255,42 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::Search { query, limit } => {
-            let storage = open_storage(&config, profile_name)?;
+            let storage = config.open_storage(requested)?;
             cmd_search(&storage, &query, limit)
         }
         Commands::Backlinks { identifier } => {
-            let storage = open_storage(&config, profile_name)?;
+            let storage = config.open_storage(requested)?;
             cmd_backlinks(&storage, &identifier)
         }
         Commands::Tags { tag } => {
-            let storage = open_storage(&config, profile_name)?;
+            let storage = config.open_storage(requested)?;
             cmd_tags(&storage, tag.as_deref())
         }
         Commands::Daily { date } => {
-            let mut storage = open_storage(&config, profile_name)?;
+            let mut storage = config.open_storage(requested)?;
             cmd_daily(&mut storage, &date, &config)
         }
         Commands::Capture { text } => {
-            let mut storage = open_storage(&config, profile_name)?;
+            let mut storage = config.open_storage(requested)?;
             cmd_capture(&mut storage, &text)
         }
         Commands::Reindex => {
-            let mut storage = open_storage(&config, profile_name)?;
+            let mut storage = config.open_storage(requested)?;
             cmd_reindex(&mut storage)
         }
         Commands::Import { file, title, tags, path, dry_run } => {
-            let mut storage = open_storage(&config, profile_name)?;
+            let mut storage = config.open_storage(requested)?;
             cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
-        Commands::Mcp => crate::mcp::McpServer::run(config),
+        // `cerebro --profile work mcp` serves `work` unless a call names a profile.
+        Commands::Mcp => crate::mcp::McpServer::run(config, cli.profile.clone()),
         Commands::Kp { action } => {
-            let storage = open_storage(&config, profile_name)?;
+            let storage = config.open_storage(requested)?;
             cmd_kp(&config, &storage, action)
         }
         Commands::Sync { action } => {
-            cmd_sync(&config, profile_name, action)
+            let target = config.profile_target(requested)?;
+            cmd_sync(&target.name, &target.dir, action)
         }
     }
 }
@@ -291,6 +298,7 @@ pub fn run(cli: Cli) -> Result<()> {
 // ── Command Implementations ──────────────────────────────────────
 
 fn cmd_init(config: &Config, name: &str) -> Result<()> {
+    ProfileConfig::check_name(name)?;
     let profile_dir = config.profiles_dir.join(name);
     std::fs::create_dir_all(&profile_dir)?;
 
@@ -305,7 +313,7 @@ fn cmd_init(config: &Config, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_profile(config: &Config, action: ProfileCommands) -> Result<()> {
+fn cmd_profile(config: &Config, action: ProfileCommands, config_file: &std::path::Path) -> Result<()> {
     match action {
         ProfileCommands::List => {
             println!("Profiles:");
@@ -322,30 +330,32 @@ fn cmd_profile(config: &Config, action: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::Create { name, display_name } => {
             cmd_init(config, &name)?;
-            if let Some(dn) = display_name {
-                println!("  Display name: {}", dn);
+            if let Some(display_name) = display_name {
+                let profile_dir = config.profiles_dir.join(&name);
+                let mut profile_config = ProfileConfig::load(&profile_dir)?;
+                profile_config.display_name = display_name.clone();
+                profile_config.save(&profile_dir)?;
+                println!("  Display name: {}", display_name);
             }
         }
         ProfileCommands::Switch { name } => {
-            let profile_dir = config.profiles_dir.join(&name);
-            if !profile_dir.exists() {
-                return Err(anyhow!("Profile '{}' does not exist", name));
-            }
+            // Must exist: switching to a misspelled profile would otherwise
+            // report success and change nothing.
+            config.profile_target(Some(&name))?;
             let mut config = config.clone();
             config.active_profile = Some(name.clone());
-            let config_path = dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("cerebro")
-                .join("config.toml");
-            config.save_to(&config_path)?;
+            // The same file every later run reads (NOT the platform's
+            // Application Support directory, which nothing reads).
+            config.save_to(config_file)?;
             println!("✓ Switched to profile '{}'", name);
         }
         ProfileCommands::Delete { name } => {
             if name == "personal" || name == "professional" {
                 return Err(anyhow!("Cannot delete default profile '{}'", name));
             }
-            let profile_dir = config.profiles_dir.join(&name);
-            std::fs::remove_dir_all(&profile_dir)?;
+            let target = config.profile_target(Some(&name))?;
+            println!("Deleting '{}' at {:?} — this removes every note in it", name, target.dir);
+            std::fs::remove_dir_all(&target.dir)?;
             println!("✓ Deleted profile '{}'", name);
         }
     }
@@ -384,7 +394,8 @@ fn cmd_note_list(storage: &Storage, tag: Option<&str>, limit: i64, offset: i64) 
         return Ok(());
     }
 
-    println!("{:<40} {:<30} {:<10} {}", "TITLE", "PATH", "WORDS", "UPDATED");
+    let (title, path, words) = ("TITLE", "PATH", "WORDS");
+    println!("{title:<40} {path:<30} {words:<10} UPDATED");
     println!("{}", "-".repeat(100));
     for note in &notes {
         let title = truncate(&note.title, 38);
@@ -445,7 +456,11 @@ fn cmd_backlinks(storage: &Storage, identifier: &str) -> Result<()> {
         println!("  (none)");
     } else {
         for link in &backlinks {
-            println!("  ← {} (line {})", link.source_id, link.line_number.unwrap_or(0));
+            let source = match storage.note_title(&link.source_id) {
+                Some((title, path)) => format!("{title} [{path}]"),
+                None => link.source_id.clone(),
+            };
+            println!("  ← {source} (line {})", link.line_number.unwrap_or(0));
             if let Some(ctx) = &link.context {
                 println!("    {}", truncate(ctx, 80));
             }
@@ -457,8 +472,15 @@ fn cmd_backlinks(storage: &Storage, identifier: &str) -> Result<()> {
         println!("  (none)");
     } else {
         for link in &forward_links {
-            let target = link.target_id.as_deref().unwrap_or("(unresolved)");
-            println!("  → {} [[{}]] (line {})", target, link.target_ref, link.line_number.unwrap_or(0));
+            // The note's title when the link resolves, and why not when it does not.
+            let target = match &link.target_id {
+                Some(id) => match storage.note_title(id) {
+                    Some((title, path)) => format!("{title} [{path}]"),
+                    None => id.clone(),
+                },
+                None => "(unresolved)".to_string(),
+            };
+            println!("  → {target} [[{}]] (line {})", link.target_ref, link.line_number.unwrap_or(0));
         }
     }
 
@@ -481,7 +503,8 @@ fn cmd_tags(storage: &Storage, tag: Option<&str>) -> Result<()> {
                 println!("No tags found.");
                 return Ok(());
             }
-            println!("{:<30} {}", "TAG", "COUNT");
+            let (tag, count) = ("TAG", "COUNT");
+            println!("{tag:<30} {count}");
             println!("{}", "-".repeat(40));
             for (name, count) in &tags {
                 println!("{:<30} {}", name, count);
@@ -502,28 +525,28 @@ fn cmd_daily(storage: &mut Storage, date_str: &str, config: &Config) -> Result<(
     };
 
     let title = format!("Daily Note - {}", date);
-    let existing = storage.list_notes(None, 1000, 0)?
-        .into_iter()
-        .find(|n| n.title == title);
+    let path = format!("daily/{}.md", date);
 
-    match existing {
-        Some(note) => {
-            let nc = storage.read_note(&note.id)?;
+    // Look the day's note up by its path. (It used to be searched among the
+    // 1000 most recently updated notes, and recreated — overwriting the
+    // file — once more than a thousand notes were newer.)
+    match storage.read_note(&path) {
+        Ok(nc) => {
             let edited = edit_in_editor(&nc.body, &config.editor)?;
             if edited != nc.body {
-                storage.update_note(&note.id, &edited)?;
+                storage.update_note(&nc.note.id, &edited)?;
                 println!("✓ Updated daily note for {}", date);
             } else {
                 println!("Daily note for {} (no changes)", date);
             }
         }
-        None => {
+        Err(_) => {
             let template = format!(
                 "# Daily Note - {}\n\n## Tasks\n- \n\n## Notes\n\n## Ideas\n\n",
                 date
             );
             let body = edit_in_editor(&template, &config.editor)?;
-            let note = storage.create_note(&title, &body, Some(&format!("daily/{}.md", date)), Some(vec!["daily".to_string()]))?;
+            let note = storage.create_note(&title, &body, Some(&path), Some(vec!["daily".to_string()]))?;
             println!("✓ Created daily note for {} ({})", date, note.path);
         }
     }
@@ -615,13 +638,14 @@ fn cmd_kp(config: &Config, storage: &Storage, action: KpCommands) -> Result<()> 
 
     match action {
         KpCommands::Health => {
-            let healthy = rt.block_on(connector.health_check())?;
-            if healthy {
-                println!("✓ Knowledge Palace healthy at {}", config.knowledge_palace.endpoint);
-            } else if !config.knowledge_palace.enabled {
-                println!("✗ Knowledge Palace integration is disabled in config.toml");
-            } else {
-                println!("✗ Knowledge Palace unreachable at {}", config.knowledge_palace.endpoint);
+            let endpoint = &config.knowledge_palace.endpoint;
+            match rt.block_on(connector.health_check()) {
+                Ok(true) => println!("✓ Knowledge Palace healthy at {endpoint}"),
+                Ok(false) if !config.knowledge_palace.enabled => {
+                    println!("✗ Knowledge Palace integration is disabled in config.toml")
+                }
+                Ok(false) => println!("✗ Knowledge Palace did not report healthy at {endpoint}"),
+                Err(e) => println!("✗ Knowledge Palace unreachable at {endpoint} ({e})"),
             }
         }
         KpCommands::Search { query, mode, limit } => {
@@ -661,9 +685,8 @@ fn cmd_kp(config: &Config, storage: &Storage, action: KpCommands) -> Result<()> 
     Ok(())
 }
 
-fn cmd_sync(config: &Config, profile_name: &str, action: SyncCommands) -> Result<()> {
-    let profile_dir = config.profiles_dir.join(profile_name);
-    let profile_config = ProfileConfig::load_or_default(&profile_dir, profile_name)?;
+fn cmd_sync(profile_name: &str, profile_dir: &std::path::Path, action: SyncCommands) -> Result<()> {
+    let profile_config = ProfileConfig::load_or_default(profile_dir, profile_name)?;
     let sync = crate::sync::GitSync::new(
         profile_dir.join(&profile_config.notes_dir),
         crate::sync::SyncConfig {
@@ -698,26 +721,29 @@ fn cmd_sync(config: &Config, profile_name: &str, action: SyncCommands) -> Result
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-fn open_storage(config: &Config, profile_name: &str) -> Result<Storage> {
-    let profile_dir = config.profiles_dir.join(profile_name);
-    let profile_config = ProfileConfig::load_or_default(&profile_dir, profile_name)?;
-    Storage::open(&profile_dir, &profile_config)
-}
-
 fn edit_in_editor(content: &str, editor: &str) -> Result<String> {
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("cerebro_edit.md");
-    std::fs::write(&temp_path, content)?;
+    // A private copy of the note that disappears afterwards. (One fixed
+    // path in the temp directory used to be shared by every edit, and the
+    // note's text stayed there.)
+    let mut draft = tempfile::Builder::new()
+        .prefix("cerebro-")
+        .suffix(".md")
+        .tempfile()?;
+    std::io::Write::write_all(&mut draft, content.as_bytes())?;
 
-    let status = std::process::Command::new(editor)
-        .arg(&temp_path)
+    // "code -w" is a program and an argument, not a program called "code -w".
+    let mut words = editor.split_whitespace();
+    let program = words.next().ok_or_else(|| anyhow!("editor command is empty"))?;
+    let status = std::process::Command::new(program)
+        .args(words)
+        .arg(draft.path())
         .status()?;
 
     if !status.success() {
         return Err(anyhow!("Editor exited with error"));
     }
 
-    Ok(std::fs::read_to_string(&temp_path)?)
+    Ok(std::fs::read_to_string(draft.path())?)
 }
 
 fn truncate(s: &str, max: usize) -> String {

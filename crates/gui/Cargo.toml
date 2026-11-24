@@ -10,18 +10,16 @@ authors = ["Ed Barczynski"]
 [dependencies]
 cerebro = { path = "../.." }
 tauri = { version = "2", features = ["devtools"] }
+# The only plugin the frontend uses (vault / file pickers). Unused plugins
+# are not compiled in: they would only widen what the webview is allowed to do.
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 dirs = "6"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 notify = { version = "7", features = ["macos_kqueue"] }
 

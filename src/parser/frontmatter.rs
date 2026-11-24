@@ -24,6 +24,9 @@ pub struct SplitResult {
     pub yaml_block: String,
     /// Everything after the closing `---`.
     pub body: String,
+    /// How many lines of the original content precede [`Self::body`]. Add it
+    /// to a line number counted inside `body` to get the line in the file.
+    pub line_offset: usize,
 }
 
 /// Split a full document into optional YAML frontmatter and the remaining body.
@@ -36,6 +39,7 @@ pub fn split_frontmatter(content: &str) -> SplitResult {
         return SplitResult {
             yaml_block: String::new(),
             body: content.to_owned(),
+            line_offset: 0,
         };
     }
 
@@ -46,6 +50,7 @@ pub fn split_frontmatter(content: &str) -> SplitResult {
             return SplitResult {
                 yaml_block: String::new(),
                 body: content.to_owned(),
+                line_offset: 0,
             }
         }
     };
@@ -65,7 +70,13 @@ pub fn split_frontmatter(content: &str) -> SplitResult {
             // body starts after the closing ---
             let body_start = closing_offset + line.len();
             let body = content[body_start..].trim_start_matches(['\n', '\r']).to_owned();
-            return SplitResult { yaml_block, body };
+            // Lines before the body = newline characters before the body.
+            let line_offset = content[..content.len() - body.len()].matches('\n').count();
+            return SplitResult {
+                yaml_block,
+                body,
+                line_offset,
+            };
         }
         // If the first non-empty line is not `---`, keep going —
         // but if we hit an empty yaml_block and a non-dash line, abort.
@@ -78,6 +89,7 @@ pub fn split_frontmatter(content: &str) -> SplitResult {
     SplitResult {
         yaml_block: String::new(),
         body: content.to_owned(),
+        line_offset: 0,
     }
 }
 
