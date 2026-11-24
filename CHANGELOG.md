@@ -126,6 +126,14 @@ a regression test in `tests/audit_regressions.rs` or `tests/audit_cli_mcp.rs`.
 - Auto-linking compares every pair of notes (about 2.5 s for 10,000 notes,
   off the GUI's main thread).
 
+### Development notes
+
+- Build the GUI through the tauri CLI (`cargo tauri build`, or `tauri build`
+  from `crates/gui` — see the README). A plain `cargo build -p cerebro-gui`
+  compiles fine but links a binary that expects the Vite dev server and shows
+  a white window: the frontend bundle is only embedded when the tauri crate's
+  `custom-protocol` feature is on, which the tauri CLI enables.
+
 ## [0.4.1] — 2026-11-06
 
 ### Changed

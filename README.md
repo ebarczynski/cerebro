@@ -292,8 +292,10 @@ CEREBRO_BENCH=1 cargo run --release --bench vault_bench -- --sizes 1000,5000,100
 # Build core library only
 cargo build --release -p cerebro
 
-# Build GUI only
-cargo build --release -p cerebro-gui
+# Build GUI only — use the tauri CLI. A plain `cargo build -p cerebro-gui`
+# compiles, but the binary then expects the Vite dev server
+# (http://localhost:5173) and shows a white window instead of the app.
+frontend/node_modules/.bin/tauri build --no-bundle   # from crates/gui
 
 # Frontend development
 cd crates/gui/frontend
