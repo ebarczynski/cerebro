@@ -398,6 +398,12 @@ Things Cerebro does **not** do (yet), so you can decide whether they matter to y
 - **The Knowledge Palace endpoint is global** for the CLI and MCP (one
   `[knowledge_palace]` in `config.toml` for all profiles); the per-vault
   section in `vault.toml` is only read by the GUI's KP commands.
+- **Tags passed when a note is created are not always kept.** `--tags` on
+  `cerebro notes create` and `cerebro import`, and the `tags` argument of the
+  MCP tools, are written into the note's frontmatter only when the content has
+  no frontmatter of its own. Otherwise they exist in the index alone and are
+  gone after the next reindex — the Obsidian import's `import/obsidian` and
+  `imported` tags included.
 - **Auto-links look at tags and titles, not note bodies.**
 - **No OCR for PDFs, no LibreOffice-free `.doc` import.**
 - **Markdown preview renders raw HTML** in notes (scripts are blocked by the

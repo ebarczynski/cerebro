@@ -116,6 +116,16 @@ a regression test in `tests/audit_regressions.rs` or `tests/audit_cli_mcp.rs`.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes and is run in
   CI.
 
+### Known issues, not fixed in this pass
+
+- Tags passed at creation (`--tags`, the MCP `tags` argument) are written
+  into the note only when the content has no frontmatter of its own;
+  otherwise they live in the index and disappear at the next reindex.
+- The MCP server handles one request at a time; a `cerebro_kp_search` call
+  waits up to 10 s on Knowledge Palace before anything else is answered.
+- Auto-linking compares every pair of notes (about 2.5 s for 10,000 notes,
+  off the GUI's main thread).
+
 ## [0.4.1] — 2026-11-06
 
 ### Changed
