@@ -365,8 +365,6 @@ frontend/node_modules/.bin/tauri icon icons/icon.png
 
 ## Benchmarks
 
-## Benchmarks
-
 Measured for the 2026-11-23 audit on an Apple M5 Pro (18 cores, 69 GB RAM,
 macOS), release build (`lto = true`, `codegen-units = 1`). The vaults are
 synthetic — notes of roughly 400 words with 2–4 tags and 3–8 wikilinks each —

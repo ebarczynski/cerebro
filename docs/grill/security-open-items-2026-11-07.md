@@ -8,6 +8,13 @@ Verified interpretation: TouchID stays as optional keychain convenience. All fiv
 round-2 decisions recorded in ADR 0006/0007 addenda. One interpretation
 flagged for confirmation at GO (see below).
 
+**Post-merge audit (2026-11-25):** several statements below did not hold
+and are corrected in the ADR amendments: business vaults were **not**
+protected by default, TouchID was never implemented, and the "97 tests
+green" count came from a tree whose MCP sandbox test fails on macOS
+(the journal was read from $XDG_CONFIG_HOME, which macOS ignores). The
+full finding list and fixes are in the CHANGELOG and the branch commits.
+
 ## All decisions (round 1 + round 2)
 
 - Threat model: disk theft + AI over-read via MCP IN; root/memory/forensics OUT.

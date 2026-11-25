@@ -61,3 +61,34 @@ simple." Accepted — the audit journal is the SIMPLEST useful form:
   policy declared, behavior is exactly today's, plus one audit line per
   call.
 
+
+---
+
+## Amendment — 2026-11-25 (post-merge audit): implementation as shipped
+
+- **The default policy breaks v0.6.0 behaviour.** Round-2's "with no policy
+  declared, behavior is exactly today's" is superseded: with no policy, the
+  active profile and the `--profile` a server was started for are
+  read-only, every other profile is `none`. On v0.6.0 a client could read
+  any profile by name and write to the active one. Users who need writes
+  add `[mcp.profiles.<name>] allow = "write"` or pass `--scope`; the
+  CHANGELOG calls this out as breaking.
+- **The journal is at `~/.cerebro/audit/mcp.jsonl`** — the code originally
+  wrote to the platform config directory (Application Support on macOS),
+  and with default permissions; both fixed. Directory 0700, file 0600.
+- **The journal fails open.** If it cannot be written, the call still runs
+  and only a stderr warning notes the loss. Chosen deliberately over
+  refusing every call while the journal is unwritable; this ADR and the
+  code comment now say so.
+- **Tool-error reasons for protected vaults are withheld** in the journal:
+  they carry caller-supplied identifiers ("note not found: <title>"),
+  which must not land in a file outside the vault. The client still gets
+  the full error. "Never note content" therefore extends to identifiers.
+- **"Locked means invisible" is about content.** A denied call does tell
+  the client that the profile exists and is protected, and names the
+  `--unlock` flag — the shape of the denial leaks, the content does not.
+- **`--unlock` uses the keychain cache first** (no terminal needed);
+  without a cache entry and without a controlling terminal the vault is
+  skipped with guidance on stderr instead of failing the server start.
+- Calls that fail argument validation are audited as denials, like every
+  other call.

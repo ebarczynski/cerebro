@@ -100,3 +100,46 @@ sleep/manual. Anything beyond that budget needs a new owner decision.
   and `cerebro vault decrypt`; GUI toggle equivalent. Git sync pushes
   ciphertext as-is.
 
+
+---
+
+## Amendment — 2026-11-25 (post-merge audit): implementation as shipped
+
+Every claim in this ADR was checked against the merged code and the running
+binary (2026-11-25 audit). Corrections and honest restatements:
+
+- **Scope of "everything":** protection encrypts the `.md` note files and
+  the database. Attachments, hidden directories (`.trash/`, …) and other
+  non-`.md` files stay plaintext; the README says so. A stray plaintext
+  `.md` inside a protected vault is re-encrypted at the next reindex.
+- **Kind-informed defaults are not implemented.** No vault is protected
+  automatically — Business included; the README recommends enabling
+  protection right after creating a business vault. A create-time prompt is
+  a planned follow-up. Round-2's "Business vaults get protection enabled by
+  default" describes intent, not behaviour.
+- **TouchID/biometry is not implemented.** The optional keychain cache
+  (`cerebro vault encrypt --keychain`) is a plain keychain item behind the
+  user session, no biometric gating. Round-1's "behind TouchID" is
+  superseded; biometry remains a candidate for later.
+- **There is no `cerebro lock` command.** The CLI has no persistent session
+  to lock — each invocation unlocks and exits. Relock is the GUI's lock
+  button / Ctrl+Cmd+L and its sleep heuristic.
+- **No GUI encrypt/decrypt toggle yet.** Protection is managed with
+  `cerebro vault encrypt|decrypt`; the round-2 "GUI toggle equivalent" is
+  not built.
+- **Backups live inside the vault** (`<vault>/backups/<ts>-<purpose>`),
+  directory 0700, include `vault.toml` (the wrapped master key — without it
+  a backup is unopenable), are announced on stdout, and are deleted when
+  the migration completes. On failure they are kept and the error names
+  them. Round-1's `~/.cerebro/backups/` is superseded.
+- **SQLCipher feature:** `bundled-sqlcipher-vendored-openssl` (vendored
+  OpenSSL), not plain `bundled-sqlcipher`.
+- **Interruption recovery:** a migration that dies between the config flip
+  and the database rebuild leaves the vault unopenable ("file is not a
+  database"). `cerebro vault decrypt` completes the migration — it never
+  opens the stale database — and deleting `db.sqlite` also recovers (the
+  index is rebuilt from the files). Round-1's "reads tolerate the mixed
+  state" was wrong and is superseded.
+- **Passphrase policy:** at encryption time the passphrase must be at least
+  8 characters; empty or short ones are refused. Decryption is unchanged
+  (an existing weak vault still opens with its own passphrase).
