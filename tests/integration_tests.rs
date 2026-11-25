@@ -909,3 +909,36 @@ fn a_keyed_open_of_a_plaintext_database_names_the_recovery_path() {
     assert!(message.contains("vault decrypt"), "{message}");
     assert!(message.contains("delete db.sqlite"), "{message}");
 }
+
+#[test]
+fn a_stray_plaintext_note_in_a_protected_vault_is_reencrypted_by_reindex() {
+    // (2026-11-25 audit, finding 5): a plaintext .md inside a protected
+    // vault was read as-is and stayed plaintext forever while `vault status`
+    // reported ENABLED.
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_dir = tmp.path().join("v");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut cfg = ProfileConfig::new("v");
+    cfg.save_to(&profile_dir).unwrap();
+    let notes = profile_dir.join("notes");
+    fs::write(notes.join("a.md"), "# A\nprotected body\n").unwrap();
+
+    Storage::enable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
+    assert!(fs::read(notes.join("a.md")).unwrap().starts_with(b"CERE1"));
+
+    // Drop a plaintext file into the protected vault from outside.
+    fs::write(notes.join("stray.md"), "# Stray\nleaked-4f88 body\n").unwrap();
+    assert!(fs::read(notes.join("stray.md")).unwrap().starts_with(b"# Stray"));
+
+    let key = cerebro::crypto::VaultKey::unwrap_from_config(&cfg, "long-enough-pass").unwrap();
+    let mut storage = Storage::open_with_key(&profile_dir, &cfg, Some(&key)).unwrap();
+    let stats = storage.reindex_all().unwrap();
+    assert_eq!(stats.created, 1);
+
+    // The stray file is ciphertext now, and its content is still readable.
+    assert!(
+        fs::read(notes.join("stray.md")).unwrap().starts_with(b"CERE1"),
+        "the stray plaintext file must be encrypted by the reindex"
+    );
+    assert!(storage.read_note("Stray").unwrap().body.contains("leaked-4f88"));
+}

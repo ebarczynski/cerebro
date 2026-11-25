@@ -207,7 +207,7 @@ impl Storage {
     /// Read a note file, decrypting when the vault is protected — see
     /// [`read_note_file`].
     fn read_note_file(&self, path: &Path) -> Result<String> {
-        read_note_file(&self.crypto, path)
+        read_note_content(&self.crypto, path)
     }
 
     pub fn profile_name(&self) -> &str {
@@ -690,7 +690,7 @@ impl Storage {
                     .to_string_lossy()
                     .to_string();
 
-                let content = match read_note_file(crypto, path) {
+                let content = match read_note_file(crypto, path, true) {
                     Ok(c) => c,
                     Err(_) => {
                         stats.errors += 1;
@@ -1647,23 +1647,42 @@ fn note_file_bytes(crypto: &Option<VaultKey>, content: &str) -> Result<Vec<u8>> 
 }
 
 /// Read a note file, decrypting when the vault is protected and the bytes
-/// carry Cerebro's encryption magic. Plaintext bytes inside a protected
-/// vault (e.g. dropped in externally) are read as-is and will be encrypted
-/// on the next write.
-fn read_note_file(crypto: &Option<VaultKey>, path: &Path) -> Result<String> {
+/// carry Cerebro's encryption magic.
+///
+/// `reencrypt_stray`: when the vault is protected and the file is plaintext
+/// (dropped in externally, or left behind by an interrupted migration), it is
+/// encrypted in place before its content is returned — a protected vault does
+/// not keep plaintext notes forever (ADR 0006: no mixed vaults).
+fn read_note_file(crypto: &Option<VaultKey>, path: &Path, reencrypt_stray: bool) -> Result<String> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("reading note file {:?}", path))?;
-    let decrypted = match (crypto, crypto::looks_encrypted(&bytes)) {
-        (Some(key), true) => Some(key.decrypt_bytes(&bytes)?),
-        (Some(_), false) => None, // plaintext inside a protected vault
+    let is_ciphertext = crypto::looks_encrypted(&bytes);
+    let plaintext = match (crypto, is_ciphertext) {
+        (Some(key), true) => key.decrypt_bytes(&bytes)?,
+        (Some(key), false) => {
+            if reencrypt_stray {
+                let ct = key.encrypt_bytes(&bytes)?;
+                std::fs::write(path, ct)
+                    .with_context(|| format!("re-encrypting plaintext note {:?}", path))?;
+                tracing::info!(
+                    "re-encrypted a plaintext note found inside the protected vault: {:?}",
+                    path
+                );
+            }
+            bytes
+        }
         (None, true) => bail!(
             "encrypted note found but the vault was opened without a key: {:?}",
             path
         ),
-        (None, false) => None,
+        (None, false) => bytes,
     };
-    let bytes = decrypted.unwrap_or(bytes);
-    String::from_utf8(bytes).with_context(|| format!("note file is not UTF-8: {:?}", path))
+    String::from_utf8(plaintext).with_context(|| format!("note file is not UTF-8: {:?}", path))
+}
+
+/// [`read_note_file`] without re-encryption: reads must not modify the vault.
+fn read_note_content(crypto: &Option<VaultKey>, path: &Path) -> Result<String> {
+    read_note_file(crypto, path, false)
 }
 
 /// Create `path` with `contents`; fails if anything is already there, and

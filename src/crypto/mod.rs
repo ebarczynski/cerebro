@@ -232,14 +232,6 @@ pub fn looks_encrypted(bytes: &[u8]) -> bool {
     bytes.len() > FILE_MAGIC.len() && &bytes[..FILE_MAGIC.len()] == FILE_MAGIC
 }
 
-/// True when a note FILE on disk is ciphertext.
-pub fn file_looks_encrypted(path: &Path) -> bool {
-    match std::fs::read(path) {
-        Ok(bytes) => looks_encrypted(&bytes),
-        Err(_) => false,
-    }
-}
-
 /// Derive a 32-byte wrapping key from a passphrase (Argon2id v0x13).
 pub fn derive_key(passphrase: &str, params: &KdfParams) -> Result<[u8; KEY_LEN]> {
     use argon2::{Algorithm, Argon2, Params, Version};
