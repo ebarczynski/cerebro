@@ -181,9 +181,8 @@ impl LinkGraph {
         };
 
         let mut results = Vec::new();
-        let mut incoming = self.graph.neighbors_directed(idx, petgraph::Direction::Incoming);
-        while let Some(src_idx) = incoming.next() {
-            // Get the edge between src and target
+        // Get the edge between src and target, for every source
+        for src_idx in self.graph.neighbors_directed(idx, petgraph::Direction::Incoming) {
             if let Some(edge) = self.graph.edges_connecting(src_idx, idx).next() {
                 results.push((&self.graph[src_idx], edge.weight()));
             }
@@ -201,8 +200,7 @@ impl LinkGraph {
         };
 
         let mut results = Vec::new();
-        let mut outgoing = self.graph.neighbors_directed(idx, petgraph::Direction::Outgoing);
-        while let Some(target_idx) = outgoing.next() {
+        for target_idx in self.graph.neighbors_directed(idx, petgraph::Direction::Outgoing) {
             if let Some(edge) = self.graph.edges_connecting(idx, target_idx).next() {
                 results.push((&self.graph[target_idx], edge.weight()));
             }
@@ -247,8 +245,8 @@ impl LinkGraph {
                 .neighbors_undirected(node_idx)
                 .collect::<Vec<_>>()
             {
-                if !visited.contains_key(&neighbor) {
-                    visited.insert(neighbor, d + 1);
+                if let std::collections::hash_map::Entry::Vacant(entry) = visited.entry(neighbor) {
+                    entry.insert(d + 1);
                     queue.push((neighbor, d + 1));
                 }
             }

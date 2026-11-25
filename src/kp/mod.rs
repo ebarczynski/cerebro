@@ -157,6 +157,8 @@ impl KpConnector {
             .json::<KpSearchResponse>()
             .await?;
 
+        // Goes to stderr (see main.rs), so it can never end up in the MCP stream.
+        tracing::debug!(total = resp.total, mode = %resp.mode, query = %resp.query, "knowledge palace answered");
         Ok(resp
             .results
             .into_iter()
