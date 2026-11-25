@@ -635,6 +635,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "zeroize",
  "zip",
 ]
 

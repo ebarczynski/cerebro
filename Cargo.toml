@@ -35,6 +35,8 @@ base64 = "0.22"
 rpassword = "7"
 keyring = "3"
 getrandom = "0.2"
+# Key bytes are zeroized on drop (VaultKey, derived wrapping keys)
+zeroize = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -2,11 +2,12 @@
 //!
 //! Key hierarchy: every protected vault has a random 256-bit master key.
 //! Note files are AES-256-GCM ciphertext under that key; the database is
-//! SQLCipher keyed with the same master key (raw hex form). The master key
-//! itself never touches disk unencrypted — it is stored as an
-//! AES-256-GCM-wrapped blob whose wrapping key comes from Argon2id over the
-//! owner's passphrase, and optionally cached in the OS keychain as a
-//! convenience wrapper (never a second credential).
+//! SQLCipher keyed with the same master key (base64 string form — see
+//! [`VaultKey::sqlcipher_pragma_value`]). The master key itself never
+//! touches disk unencrypted — it is stored as an AES-256-GCM-wrapped blob
+//! whose wrapping key comes from Argon2id over the owner's passphrase, and
+//! optionally cached in the OS keychain as a convenience wrapper (never a
+//! second credential).
 //!
 //! Friction budget (owner's binding constraint): passphrase at session
 //! unlock, relock on sleep/manual only. Nothing in this module may add
@@ -18,6 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Magic prefix identifying an encrypted note file (grill finding: format
 /// must be self-describing so plaintext/ciphertext is detectable on read).
@@ -53,21 +55,11 @@ impl KdfParams {
     }
 }
 
-/// The `[protection]` section of a profile's vault.toml.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ProtectionConfig {
-    pub enabled: bool,
-    pub kdf: Option<KdfParams>,
-    /// AES-256-GCM wrapped master key: base64(nonce || ciphertext), where
-    /// the wrapping key = Argon2id(passphrase, salt, params).
-    pub wrapped_key_b64: Option<String>,
-    /// Optional macOS keychain convenience handle (service name). Presence
-    /// does NOT change credentials — the passphrase still works alone.
-    pub keychain_service: Option<String>,
-}
-
 /// An unlocked vault's in-memory key context. Held only while the session
 /// is unlocked (CLI: per invocation; GUI/MCP: per session).
+///
+/// Dropping a `VaultKey` — including every clone — zeroes the key bytes:
+/// "dropped by lock_vault" means erased, not merely unreachable.
 #[derive(Clone)]
 pub struct VaultKey {
     key: [u8; KEY_LEN],
@@ -77,6 +69,12 @@ impl std::fmt::Debug for VaultKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never leak key material through Debug.
         write!(f, "VaultKey(***redacted***)")
+    }
+}
+
+impl Drop for VaultKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
     }
 }
 
@@ -139,7 +137,7 @@ impl VaultKey {
     /// Wrap the master key under an Argon2id-derived wrapping key.
     pub fn wrap_with_passphrase(&self, passphrase: &str, params: &KdfParams) -> Result<String> {
         let wrap_key = derive_key(passphrase, params)?;
-        let aead = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&wrap_key));
+        let aead = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*wrap_key));
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = aead
             .encrypt(&nonce, self.key.as_slice())
@@ -159,7 +157,7 @@ impl VaultKey {
             bail!("wrapped key blob too short");
         }
         let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
-        let aead = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&wrap_key));
+        let aead = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*wrap_key));
         let pt = aead
             .decrypt(Nonce::from_slice(nonce_bytes), ct)
             .map_err(|_| anyhow!("wrong passphrase"))?;
@@ -231,15 +229,18 @@ pub fn looks_encrypted(bytes: &[u8]) -> bool {
 }
 
 /// Derive a 32-byte wrapping key from a passphrase (Argon2id v0x13).
-pub fn derive_key(passphrase: &str, params: &KdfParams) -> Result<[u8; KEY_LEN]> {
+///
+/// The result is `Zeroizing`: it is passphrase-equivalent, so it is erased
+/// on scope exit instead of lingering on the stack or in temporaries.
+pub fn derive_key(passphrase: &str, params: &KdfParams) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     use argon2::{Algorithm, Argon2, Params, Version};
     let salt = params.salt()?;
     let p = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(KEY_LEN))
         .map_err(|e| anyhow!("invalid Argon2 params: {e}"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, p);
-    let mut out = [0u8; KEY_LEN];
+    let mut out = Zeroizing::new([0u8; KEY_LEN]);
     argon
-        .hash_password_into(passphrase.as_bytes(), &salt, &mut out)
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut *out)
         .map_err(|e| anyhow!("argon2 failure: {e}"))?;
     Ok(out)
 }
