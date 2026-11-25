@@ -12,8 +12,6 @@
 //! unlock, relock on sleep/manual only. Nothing in this module may add
 //! interaction beyond that.
 
-use std::path::Path;
-
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{anyhow, bail, Context, Result};

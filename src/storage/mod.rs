@@ -862,7 +862,7 @@ impl Storage {
     /// is deleted. It is announced (it is a plaintext copy of the vault while
     /// it exists) and removed as soon as the migration succeeds. On failure
     /// it is kept and the error names it: it is the recovery path (ADR 0006).
-    fn backup_vault(profile_dir: &Path, notes_dir: &Path, profile_name: &str, purpose: &str) -> Result<PathBuf> {
+    fn backup_vault(profile_dir: &Path, notes_dir: &Path, purpose: &str) -> Result<PathBuf> {
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
         let dest = profile_dir
             .join("backups")
@@ -924,7 +924,7 @@ impl Storage {
         // a plaintext copy of the whole vault, so it is announced and lives
         // inside the vault directory; it is deleted again on success.
         let notes_dir = cfg.resolved_notes_dir(profile_dir);
-        let backup = Self::backup_vault(profile_dir, &notes_dir, &cfg.name, "pre-encrypt")
+        let backup = Self::backup_vault(profile_dir, &notes_dir, "pre-encrypt")
             .map_err(|e| anyhow!("creating the pre-migration backup failed: {e:#} — nothing was changed"))?;
         println!("  Pre-migration backup: {}", backup.display());
 
@@ -1013,7 +1013,7 @@ impl Storage {
         // Backup before touching anything: a copy of the encrypted state,
         // taken from the files directly (no database open).
         let notes_dir = cfg.resolved_notes_dir(profile_dir);
-        let backup = Self::backup_vault(profile_dir, &notes_dir, &cfg.name, "pre-decrypt")
+        let backup = Self::backup_vault(profile_dir, &notes_dir, "pre-decrypt")
             .map_err(|e| anyhow!("creating the pre-migration backup failed: {e:#} — nothing was changed"))?;
         println!("  Pre-migration backup: {}", backup.display());
 

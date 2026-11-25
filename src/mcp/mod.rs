@@ -363,6 +363,18 @@ impl McpServer {
             if !cfg.encryption {
                 continue; // nothing to unlock
             }
+            // The keychain convenience cache first: it is what lets a host
+            // that gives the server no terminal (a GUI-launched MCP client)
+            // still unlock the vault — same resolution order as the CLI.
+            if let Some(service) = &cfg.protection.keychain_service {
+                match VaultKey::from_keychain(service) {
+                    Ok(Some(key)) => {
+                        keys.insert(name.clone(), key);
+                        continue;
+                    }
+                    _ => eprintln!("no usable keychain cache for vault '{name}' — falling back to the passphrase prompt"),
+                }
+            }
             let kdf = match cfg.protection.kdf.as_ref() {
                 Some(k) => k,
                 None => {
@@ -377,9 +389,24 @@ impl McpServer {
                     continue;
                 }
             };
-            let passphrase = rpassword::prompt_password(format!(
+            // The passphrase prompt needs a controlling terminal
+            // (rpassword reads /dev/tty). Without one — typical for
+            // GUI-launched MCP hosts — say what to do instead of dying with
+            // "Device not configured": the server stays up and serves the
+            // vaults it did unlock; this one stays locked and invisible.
+            let passphrase = match rpassword::prompt_password(format!(
                 "Unlock passphrase for vault '{name}' (MCP session): "
-            ))?;
+            )) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "cannot unlock vault '{name}': no terminal is available for the passphrase prompt ({e}). \
+                         Serve it unlocked from a terminal, or cache its key once with \
+                         `cerebro vault encrypt --keychain` (then re-run with --unlock)."
+                    );
+                    continue;
+                }
+            };
             match VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf) {
                 Ok(key) => {
                     keys.insert(name.clone(), key);

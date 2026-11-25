@@ -850,10 +850,10 @@ fn an_interrupted_encryption_is_recovered_by_decrypt() {
     // to die with "file is not a database" because it opened the stale index.
     Storage::disable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
 
-    let mut storage = Storage::open(&profile_dir, &cfg).unwrap();
-    assert_eq!(
+    let storage = Storage::open(&profile_dir, &cfg).unwrap();
+    assert!(
         storage.read_note("Alpha").unwrap().body.contains("alpha body"),
-        true
+        "the encrypted note must be readable after recovery"
     );
     assert!(storage.read_note("Bravo").unwrap().body.contains("bravo body 77c0"));
     // And the recovered vault's files are all plaintext again.
