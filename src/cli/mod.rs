@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config::app::Config;
-use crate::config::profile::ProfileConfig;
+use crate::config::profile::{ProfileConfig, VaultKind};
 use crate::crypto::VaultKey;
 use crate::storage::Storage;
 
@@ -146,6 +146,9 @@ pub enum ProfileCommands {
         /// Display name
         #[arg(long)]
         display_name: Option<String>,
+        /// Ownership kind: private | business | project (ADR 0008)
+        #[arg(long)]
+        kind: Option<String>,
     },
     /// Switch active profile
     Switch {
@@ -392,14 +395,31 @@ fn cmd_profile(config: &Config, action: ProfileCommands, config_file: &std::path
                 }
             }
         }
-        ProfileCommands::Create { name, display_name } => {
+        ProfileCommands::Create { name, display_name, kind } => {
             cmd_init(config, &name)?;
+            let profile_dir = config.profiles_dir.join(&name);
             if let Some(display_name) = display_name {
-                let profile_dir = config.profiles_dir.join(&name);
                 let mut profile_config = ProfileConfig::load(&profile_dir)?;
                 profile_config.display_name = display_name.clone();
                 profile_config.save(&profile_dir)?;
                 println!("  Display name: {}", display_name);
+            }
+            if let Some(kind) = kind {
+                // from_tag falls back to Private for anything unknown — for a
+                // flag the user typed, a typo must be an error, not a silent
+                // private vault.
+                let new_kind = match kind.trim().to_lowercase().as_str() {
+                    "private" | "personal" => VaultKind::Private,
+                    "business" | "work" | "corporate" => VaultKind::Business,
+                    "project" => VaultKind::Project,
+                    other => bail!(
+                        "unknown kind '{other}': expected private, business, or project"
+                    ),
+                };
+                let mut profile_config = ProfileConfig::load(&profile_dir)?;
+                profile_config.kind = new_kind;
+                profile_config.save(&profile_dir)?;
+                println!("  Kind: {}", new_kind.as_tag());
             }
         }
         ProfileCommands::Switch { name } => {

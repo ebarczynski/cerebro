@@ -985,3 +985,27 @@ fn weak_passphrases_are_refused_at_encryption_time() {
     Storage::enable_protection(&profile_dir, &mut cfg, "12345678").unwrap();
     Storage::disable_protection(&profile_dir, &mut cfg, "12345678").unwrap();
 }
+
+#[test]
+fn profile_create_takes_a_kind_flag() {
+    // ADR 0008 says contexts are created with
+    // `cerebro profile create <name> --kind project`; the flag did not exist.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+
+    let (code, _, stderr) = cerebro_cli(home, &["init"]);
+    assert_eq!(code, 0, "{}", stderr);
+    let (code, _, stderr) = cerebro_cli(home, &["profile", "create", "proj", "--kind", "project"]);
+    assert_eq!(code, 0, "{}", stderr);
+    let toml = fs::read_to_string(home.join(".cerebro/profiles/proj/vault.toml")).unwrap();
+    assert!(toml.contains(r#"kind = "project""#), "{toml}");
+
+    let (code, stdout, _) = cerebro_cli(home, &["vault", "status", "proj"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Project"), "{stdout}");
+
+    // A typo is an error, not a silent private vault.
+    let (code, _, stderr) = cerebro_cli(home, &["profile", "create", "oops", "--kind", "projekt"]);
+    assert_ne!(code, 0, "{}", stderr);
+    assert!(stderr.contains("unknown kind"), "{stderr}");
+}
