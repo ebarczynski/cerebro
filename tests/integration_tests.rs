@@ -324,9 +324,12 @@ fn test_protection_wrong_passphrase_enable_disabled_vault_is_data_safe() {
 }
 
 #[test]
-fn test_business_vaults_default_protected_documented() {
-    // ADR 0006: kind-informed defaults — the VaultKind::Project kind exists
-    // and round-trips through tags (GUI contract).
+fn vault_kind_tags_round_trip() {
+    // The VaultKind::Project kind exists and round-trips through tags (GUI
+    // contract). NOTE: this deliberately does NOT assert that business
+    // vaults are protected by default — they are not; no vault is protected
+    // automatically (ADR 0006 round-2 correction). The old name claimed
+    // coverage that did not exist (2026-11-25 audit).
     assert_eq!(cerebro::config::profile::VaultKind::from_tag("project"), cerebro::config::profile::VaultKind::Project);
     assert_eq!(cerebro::config::profile::VaultKind::Project.as_tag(), "project");
     assert_eq!(cerebro::config::profile::VaultKind::Business.as_tag(), "business");
@@ -705,8 +708,19 @@ fn test_mcp_sandbox_policies_and_audit() {
     assert!(responses2[1].contains("not exposed over MCP"), "got: {}", responses2[1]);
 
     // Audit journal: every call recorded with its decision, never note content.
-    let audit = xdg.join("cerebro/audit/mcp.jsonl");
-    let audit_text = fs::read_to_string(audit).expect("audit journal must exist");
+    // The journal lives at $HOME/.cerebro/audit/mcp.jsonl (config_home()),
+    // which is why the child runs with HOME=xdg above — XDG_CONFIG_HOME has
+    // no effect on macOS, so the old XDG-based path failed there.
+    let audit = xdg.join(".cerebro/audit/mcp.jsonl");
+    let audit_text = fs::read_to_string(&audit).expect("audit journal must exist");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&audit).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the audit journal must be user-only");
+        let dir_mode = fs::metadata(audit.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "the audit directory must be user-only");
+    }
     let allow_count = audit_text.matches("\"decision\":\"allow\"").count();
     let deny_count = audit_text.matches("\"decision\":\"deny\"").count();
     let error_count = audit_text.matches("\"decision\":\"error\"").count();
@@ -715,6 +729,12 @@ fn test_mcp_sandbox_policies_and_audit() {
     assert!(error_count >= 1, "error (locked) lines missing: {audit_text}");
     assert!(audit_text.contains("VAULT LOCKED"), "locked reason must be audited");
     assert!(!audit_text.contains("seed content"), "audit must never contain note content");
+    // A protected vault's tool errors may not leak identifiers (titles) into
+    // the journal — it lives outside the vault.
+    assert!(
+        !audit_text.contains("Note sec"),
+        "tool errors on a protected vault must be journal-suppressed: {audit_text}"
+    );
 }
 
 // ── vault.toml must never be replaced (ADR 0006: it holds the wrapped key) ──

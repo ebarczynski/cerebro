@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -251,6 +251,11 @@ pub struct McpStartOpts {
 
 /// Append one audit line. Audit failures are logged, never fatal: an
 /// unwritable audit file must not take the server down mid-session.
+///
+/// (Known limitation, documented in ADR 0007: an audit journal that cannot
+/// be written degrades to a stderr warning — the call still runs. The
+/// alternative, refusing every call while the journal is unwritable, takes
+/// the whole server down with one full disk.)
 fn audit_line(session: &McpSession, tool: &str, profile: &str, decision: &str, reason: &str) {
     let line = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339(),
@@ -263,10 +268,15 @@ fn audit_line(session: &McpSession, tool: &str, profile: &str, decision: &str, r
         if let Some(dir) = session.audit_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&session.audit_path)?;
+        #[allow(unused_mut)]
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options.open(&session.audit_path)?;
         writeln!(f, "{line}")
     })();
     if let Err(e) = result {
@@ -420,11 +430,23 @@ impl McpServer {
             scopes.insert(name.clone(), *level);
         }
 
-        let audit_path = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("cerebro")
+        // The audit journal lives with the rest of Cerebro's data
+        // (~/.cerebro/audit/mcp.jsonl — ADR 0007), in a directory that only
+        // the user can enter: it reveals which tools address which vaults.
+        let audit_path = crate::config::app::config_home()
+            .map_err(|e| anyhow::anyhow!("cannot create the Cerebro data directory: {e}"))?
             .join("audit")
             .join("mcp.jsonl");
+        if let Some(dir) = audit_path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creating the audit directory {:?}", dir))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .with_context(|| format!("restricting {:?}", dir))?;
+            }
+        }
         let session = McpSession { keys, scopes, audit_path };
 
         let stdin = io::stdin();
@@ -671,7 +693,16 @@ fn handle_tool_call(
             ok(id, text_result(text, false))
         }
         Err(message) => {
-            audit_line(session, name, &target_profile, "error", &message);
+            // The journal sits outside the vault and must not become a side
+            // channel for a protected vault's identifiers: tool errors carry
+            // caller-supplied text ("note not found: <title>"). The client
+            // still gets the full message — the suppression is journal-only.
+            let reason = if session.keys.contains_key(&target_profile) {
+                "tool error (details withheld: protected vault)"
+            } else {
+                &message
+            };
+            audit_line(session, name, &target_profile, "error", reason);
             ok(id, text_result(message, true))
         }
     }
