@@ -241,16 +241,24 @@ without one the active profile is used — or the one given as
 ## Security
 
 Vaults are plaintext unless you protect them (ADR 0006). Protection is
-per-vault and encrypts everything at rest: every `.md` note (AES-256-GCM)
-and the database (SQLCipher). The master key is wrapped with Argon2id over
-your passphrase — **there is no recovery code and no reset**: losing the
-passphrase means losing the vault's contents.
+per-vault and encrypts the `.md` notes (AES-256-GCM) and the database
+(SQLCipher) at rest — attachments, hidden directories and other non-`.md`
+files stay plaintext. The master key is wrapped with Argon2id over your
+passphrase — **there is no recovery code and no reset**: losing the
+passphrase means losing the vault's contents. The passphrase must be at
+least 8 characters; an empty or short one is refused at encryption time.
 
 ```bash
 cerebro vault encrypt work        # warns, asks passphrase twice
 cerebro vault status work         # protection status
 cerebro vault decrypt work        # removes protection (needs passphrase)
 ```
+
+While the command runs it keeps a backup of the vault *inside the vault
+directory* (`<vault>/backups/…`) — a plaintext copy taken in case the
+migration is interrupted; it is deleted as soon as the migration completes,
+and kept (and named in the error) if something fails. Do not ship the vault
+folder while a backup directory is in it.
 
 - Business vaults: protection recommended — enable right after creation with
   `cerebro vault encrypt <name>` (a create-time prompt is a planned follow-up).

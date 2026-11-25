@@ -899,6 +899,17 @@ impl Storage {
         if cfg.encryption {
             bail!("vault '{}' is already protected", cfg.name);
         }
+        // A vault "protected" with an empty or trivial passphrase is not
+        // protected: the wrapped key sits in vault.toml and falls to the
+        // first offline guess (measured on the reference machine: ~88
+        // Argon2id evaluations per second per core at the default KDF
+        // parameters). The policy applies at encryption time only — an
+        // existing weak vault still decrypts with its passphrase.
+        if passphrase.trim().chars().count() < 8 {
+            bail!(
+                "the passphrase must be at least 8 characters (an empty or short one does not protect the vault)"
+            );
+        }
 
         // Pre-flight open must succeed (vault is plaintext).
         {

@@ -942,3 +942,26 @@ fn a_stray_plaintext_note_in_a_protected_vault_is_reencrypted_by_reindex() {
     );
     assert!(storage.read_note("Stray").unwrap().body.contains("leaked-4f88"));
 }
+
+#[test]
+fn weak_passphrases_are_refused_at_encryption_time() {
+    // (2026-11-25 audit, finding 6): "", "1", "password" and whitespace were
+    // all accepted and the vault was reported protected.
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_dir = tmp.path().join("v");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut cfg = ProfileConfig::new("v");
+    cfg.save_to(&profile_dir).unwrap();
+    fs::write(profile_dir.join("notes/a.md"), "# A\nbody\n").unwrap();
+
+    for weak in ["", "   ", "1", "short"] {
+        let mut try_cfg = cfg.clone();
+        let err = Storage::enable_protection(&profile_dir, &mut try_cfg, weak).unwrap_err();
+        assert!(format!("{err:#}").contains("at least 8 characters"), "passphrase {weak:?}: {err}");
+        assert!(!try_cfg.encryption, "a refused passphrase must leave the vault plaintext");
+    }
+
+    // Exactly 8 characters is accepted, and the vault round-trips.
+    Storage::enable_protection(&profile_dir, &mut cfg, "12345678").unwrap();
+    Storage::disable_protection(&profile_dir, &mut cfg, "12345678").unwrap();
+}
