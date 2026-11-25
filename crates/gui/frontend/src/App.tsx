@@ -1001,7 +1001,7 @@ const LAST_VAULT_KEY = 'cerebro-last-vault';
 const MAX_RECENT_VAULTS = 10;
 
 function normalizeKind(kind: string | undefined | null): VaultKindTag {
-  return kind === 'business' ? 'business' : 'private';
+  return kind === 'business' ? 'business' : kind === 'project' ? 'project' : 'private';
 }
 
 function loadRecentVaults(): RecentVault[] {
@@ -1179,7 +1179,7 @@ export default function App() {
     await invoke('create_vault', { name, path: vaultPath, kind });
     setCreateVaultOpen(false);
     await loadVault(name, vaultPath);
-    setToastMessage(`Created ${kind === 'business' ? '💼 business' : '🔒 private'} vault "${name}"`);
+    setToastMessage(`Created ${VAULT_KIND_META[kind].icon} ${VAULT_KIND_META[kind].label} vault "${name}"`);
     setTimeout(() => setToastMessage(null), 3000);
   }, [loadVault]);
 
@@ -1197,10 +1197,24 @@ export default function App() {
 
   const handleLockVault = useCallback(async () => {
     if (!isProtectedVault) return;
+    // Flush a pending autosave before dropping the vault: the 1 s debounce
+    // in handleContentChange would otherwise fire after lock_vault, fail
+    // with "No vault open", and the edit would be silently lost.
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      if (activeNote) {
+        try {
+          await invoke("update_note", { identifier: activeNote.path, content: noteContent });
+        } catch (e) {
+          console.error("Could not save before locking:", e);
+        }
+      }
+    }
     try { await invoke("lock_vault"); } catch (e) { console.warn("lock failed:", e); }
     setVaultOpen(false);
     setIsProtectedVault(false);
-  }, [isProtectedVault]);
+  }, [isProtectedVault, activeNote, noteContent]);
 
   const handleUnlockSubmit = useCallback(async () => {
     if (!unlockPrompt) return;
