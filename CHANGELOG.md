@@ -3,6 +3,62 @@
 All notable changes to Cerebro are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.7.0] — Unreleased
+
+Vault encryption at rest (ADR 0006), the MCP sandbox and audit journal
+(ADR 0007), project vaults (ADR 0008) — merged with the v0.6.0 audit work
+and hardened by the 2026-11-25 post-merge audit, whose findings and fixes
+are listed below.
+
+### Breaking
+
+- **The MCP sandbox changes the default behaviour** (ADR 0007): with no
+  policy declared, only the active profile (and the `--profile` a server
+  was started for) is exposed, read-only; every other profile is `none`.
+  On 0.6.0 a client could read any profile by name and write to the active
+  one. To allow writes, add `[mcp.profiles.<name>] allow = "write"` to
+  `config.toml` or start the server with `--scope <profile>:write`.
+- **`encryption = true` is now honoured** (0.6.0 refused it): a vault with
+  encryption enabled requires unlocking (`VAULT LOCKED`) and is encrypted
+  at rest. Manual edits to that flag without the `[protection]` section
+  fail closed.
+- The version jumps to 0.7.0 because of the breaking MCP default.
+
+### Security fixes (post-merge audit)
+
+- `cerebro init` and `cerebro profile create <existing>` no longer replace
+  an existing `vault.toml` — the only copy of a protected vault's wrapped
+  master key. `vault.toml` is written atomically. (GUI "Create Vault"
+  refuses too.)
+- The pre-migration backup now lives inside the vault, is created 0700,
+  includes `vault.toml`, is printed when taken, and is deleted when the
+  migration completes. It used to be a never-removed plaintext copy of the
+  vault in the platform config directory.
+- An interrupted `vault encrypt` is recoverable: `cerebro vault decrypt`
+  completes the migration, and the keyed-open error names both recovery
+  paths instead of "file is not a database".
+- A stray plaintext `.md` in a protected vault is re-encrypted at the next
+  reindex instead of staying plaintext forever.
+- Passphrases shorter than 8 characters are refused at encryption time.
+- The MCP audit journal is at `~/.cerebro/audit/mcp.jsonl` (as documented),
+  0600/0700, and does not record tool-error identifiers of protected
+  vaults. `cerebro mcp --unlock` uses the keychain cache first and no
+  longer dies when no terminal is available.
+- Key bytes and derived wrapping keys are zeroized on drop.
+
+### Added
+
+- `cerebro profile create --kind private|business|project` (ADR 0008).
+- `cerebro vault encrypt|decrypt|status`; `cerebro mcp --scope`, `--unlock`.
+
+### Fixed (GUI)
+
+- Project vaults display as project (they showed the Private badge), and
+  the create-vault toast labels every kind.
+- Locking a vault flushes a pending autosave instead of silently dropping
+  the last-second edit.
+
+
 ## [0.6.0] — 2026-11-25
 
 Results of a pre-release engineering audit (2026-11-23). Every item below has
