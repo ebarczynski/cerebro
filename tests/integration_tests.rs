@@ -876,3 +876,36 @@ fn copy_dir(src: &std::path::Path, dest: &std::path::Path) {
         }
     }
 }
+
+#[test]
+fn a_keyed_open_of_a_plaintext_database_names_the_recovery_path() {
+    // The old error was "file is not a database: Error code 26", which gave
+    // the user nothing to do (2026-11-25 audit, finding 7).
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_dir = tmp.path().join("v");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut cfg = ProfileConfig::new("v");
+    cfg.save_to(&profile_dir).unwrap();
+    fs::write(profile_dir.join("notes/a.md"), "# A\nbody\n").unwrap();
+
+    // Plaintext database on disk, config says protected, key at hand —
+    // exactly the interrupted-migration state.
+    let mut storage = Storage::open(&profile_dir, &cfg).unwrap();
+    storage.create_note("A", "body", None, None).unwrap();
+    drop(storage);
+    cfg.encryption = true;
+    cfg.protection = cerebro::config::profile::ProtectionSection {
+        kdf: Some(cerebro::crypto::KdfParams::generate()),
+        wrapped_key_b64: Some("AAAA".to_string()),
+        keychain_service: None,
+    };
+
+    let err = match Storage::open_with_key(&profile_dir, &cfg, Some(&cerebro::crypto::VaultKey::generate())) {
+        Ok(_) => panic!("a keyed open against a plaintext database must fail"),
+        Err(e) => e,
+    };
+    let message = format!("{err:#}");
+    assert!(message.contains("did not finish"), "{message}");
+    assert!(message.contains("vault decrypt"), "{message}");
+    assert!(message.contains("delete db.sqlite"), "{message}");
+}

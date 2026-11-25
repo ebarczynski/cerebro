@@ -163,7 +163,24 @@ impl Storage {
             ))?;
             // Force an early read so a WRONG key fails here with a clear
             // message instead of a confusing failure at first migration.
-            db.execute_batch("SELECT count(*) FROM sqlite_master;")?;
+            if let Err(e) = db.execute_batch("SELECT count(*) FROM sqlite_master;") {
+                // A database that is still plain SQLite fails with
+                // SQLITE_NOTADB, not with a decryption error: that is the
+                // state an interrupted `vault encrypt` leaves behind (the
+                // config is flipped before the database is rebuilt). Say so,
+                // and name the recovery path, instead of "file is not a
+                // database: Error code 26".
+                if e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase) {
+                    bail!(
+                        "the database at {:?} is not encrypted — an earlier `vault encrypt` did not finish. \
+                         The note files are intact: run `cerebro vault decrypt {}` with the passphrase to \
+                         complete the migration, or delete db.sqlite (the index is rebuilt from the files).",
+                        db_path,
+                        profile_config.name
+                    );
+                }
+                return Err(e).with_context(|| format!("opening the encrypted database at {:?}", db_path));
+            }
         }
 
         enable_wal(&db)?;
