@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config::app::Config;
@@ -352,9 +352,21 @@ pub fn run(cli: Cli) -> Result<()> {
 fn cmd_init(config: &Config, name: &str) -> Result<()> {
     ProfileConfig::check_name(name)?;
     let profile_dir = config.profiles_dir.join(name);
+    // vault.toml is the only copy of a protected vault's wrapped master key
+    // (ADR 0006): re-running `init` or `profile create` on an existing vault
+    // must never replace it. The old config is the vault's identity, not a
+    // template to overwrite.
+    if ProfileConfig::vault_config_path(&profile_dir).exists() {
+        bail!(
+            "a vault already exists at {} — use it with `cerebro --profile {}`, or pick another name",
+            profile_dir.display(),
+            name
+        );
+    }
     std::fs::create_dir_all(&profile_dir)?;
 
     let profile_config = ProfileConfig::new(name);
+    profile_config.validate()?;
     profile_config.save(&profile_dir)?;
 
     // Create notes directory

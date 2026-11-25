@@ -449,6 +449,16 @@ async fn create_vault(
         std::fs::create_dir_all(&profile_dir)
             .map_err(|e| format!("Failed to create vault directory at {}: {}", profile_dir.display(), e))?;
 
+        // vault.toml holds the wrapped master key of a protected vault
+        // (ADR 0006): creating over an existing vault would destroy it.
+        // Load the existing vault instead of replacing it.
+        if ProfileConfig::vault_config_path(&profile_dir).exists() {
+            return Err(format!(
+                "A vault already exists at {} — open it instead of creating over it.",
+                profile_dir.display()
+            ));
+        }
+
         let mut profile_config = ProfileConfig::new(&new_name);
         if let Some(kind) = vault_kind {
             profile_config.kind = kind;

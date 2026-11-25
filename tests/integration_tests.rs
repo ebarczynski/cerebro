@@ -716,3 +716,66 @@ fn test_mcp_sandbox_policies_and_audit() {
     assert!(audit_text.contains("VAULT LOCKED"), "locked reason must be audited");
     assert!(!audit_text.contains("seed content"), "audit must never contain note content");
 }
+
+// ── vault.toml must never be replaced (ADR 0006: it holds the wrapped key) ──
+
+fn cerebro_cli(home: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    use std::process::{Command, Stdio};
+    let out = Command::new(env!("CARGO_BIN_EXE_cerebro"))
+        .args(args)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run cerebro");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn init_refuses_to_run_inside_an_existing_vault() {
+    // Repro: re-running the Quick-Start command on a protected vault replaced
+    // vault.toml — the only copy of the wrapped master key — and the notes
+    // could never be decrypted again (2026-11-25 audit, finding 1).
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+
+    let (code, _, stderr) = cerebro_cli(home, &["init"]);
+    assert_eq!(code, 0, "{}", stderr);
+    let (code, _, stderr) = cerebro_cli(home, &["--profile", "personal", "notes", "create", "Keep", "--content", "precious"]);
+    assert_eq!(code, 0, "{}", stderr);
+    let vault_toml_before = fs::read_to_string(home.join(".cerebro/profiles/personal/vault.toml")).unwrap();
+
+    let (code, _, stderr) = cerebro_cli(home, &["init"]);
+    assert_ne!(code, 0, "a second init must not succeed");
+    assert!(stderr.contains("already exists"), "{stderr}");
+
+    let vault_toml_after = fs::read_to_string(home.join(".cerebro/profiles/personal/vault.toml")).unwrap();
+    assert_eq!(vault_toml_before, vault_toml_after, "vault.toml must be untouched");
+    let (code, stdout, stderr) = cerebro_cli(home, &["--profile", "personal", "notes", "list"]);
+    assert_eq!(code, 0, "{}", stderr);
+    assert!(stdout.contains("Keep"), "the note must survive: {stdout}");
+}
+
+#[test]
+fn profile_create_refuses_the_name_of_an_existing_vault() {
+    // Same defect through `profile create` (it shares cmd_init).
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let (code, _, stderr) = cerebro_cli(home, &["init"]);
+    assert_eq!(code, 0, "{}", stderr);
+
+    let (code, _, stderr) = cerebro_cli(home, &["profile", "create", "personal"]);
+    assert_ne!(code, 0, "creating over an existing vault must fail");
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(home.join(".cerebro/profiles/personal/vault.toml").exists());
+}

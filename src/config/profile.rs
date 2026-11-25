@@ -257,6 +257,10 @@ impl ProfileConfig {
 
     /// Save the profile config into `profile_dir`, creating the directory
     /// if it does not exist.
+    ///
+    /// The file is replaced in one step: this TOML is the only copy of a
+    /// protected vault's wrapped master key (ADR 0006), so a crash mid-write
+    /// must never leave it truncated or empty.
     pub fn save_to(&self, profile_dir: &Path) -> Result<()> {
         if !profile_dir.exists() {
             fs::create_dir_all(profile_dir)
@@ -265,7 +269,13 @@ impl ProfileConfig {
 
         let path = Self::vault_config_path(profile_dir);
         let toml_str = toml::to_string_pretty(self)?;
-        fs::write(&path, toml_str).map_err(|e| ConfigError::io(&path, e))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(profile_dir)
+            .map_err(|e| ConfigError::io(profile_dir, e))?;
+        use std::io::Write as _;
+        tmp.write_all(toml_str.as_bytes())
+            .map_err(|e| ConfigError::io(profile_dir, e))?;
+        tmp.persist(&path)
+            .map_err(|e| ConfigError::io(&path, e.error))?;
 
         // Ensure the notes directory also exists.
         let notes = self.resolved_notes_dir(profile_dir);
