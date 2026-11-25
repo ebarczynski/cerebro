@@ -3,7 +3,7 @@
 All notable changes to Cerebro are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
-## [1.1.0] — 2026-11-25
+## [0.6.0] — 2026-11-25
 
 Results of a pre-release engineering audit (2026-11-23). Every item below has
 a regression test in `tests/audit_regressions.rs` or `tests/audit_cli_mcp.rs`.
