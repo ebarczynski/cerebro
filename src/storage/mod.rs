@@ -835,25 +835,39 @@ impl Storage {
 
     // ── Protection migration (ADR 0006) ───────────────────────────
 
-    /// Back up the vault (db + notes) before an encryption migration.
-    fn backup_vault(&self, profile_dir: &Path) -> Result<PathBuf> {
+    /// Back up the whole vault before an encryption migration: the database
+    /// (with WAL/SHM — an open connection keeps uncheckpointed writes in the
+    /// WAL), the notes, and `vault.toml` — the only copy of the wrapped
+    /// master key, without which a backup cannot be opened.
+    ///
+    /// The backup lives INSIDE the vault directory, so it inherits the
+    /// vault's permissions, travels with it, and disappears when the vault
+    /// is deleted. It is announced (it is a plaintext copy of the vault while
+    /// it exists) and removed as soon as the migration succeeds. On failure
+    /// it is kept and the error names it: it is the recovery path (ADR 0006).
+    fn backup_vault(profile_dir: &Path, notes_dir: &Path, profile_name: &str, purpose: &str) -> Result<PathBuf> {
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-        let dest = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("cerebro")
+        let dest = profile_dir
             .join("backups")
-            .join(format!("{}-{}", self.profile_name(), ts));
+            .join(format!("{ts}-{purpose}"));
         std::fs::create_dir_all(&dest)?;
-        // Copy db + WAL + SHM: an open connection keeps uncheckpointed
-        // writes in the WAL — copying only db.sqlite can miss recent notes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o700))?;
+        }
         for suffix in ["", "-wal", "-shm"] {
             let db = profile_dir.join(format!("db.sqlite{suffix}"));
             if db.exists() {
                 std::fs::copy(&db, dest.join(format!("db.sqlite{suffix}")))?;
             }
         }
+        let vault_toml = ProfileConfig::vault_config_path(profile_dir);
+        if vault_toml.exists() {
+            std::fs::copy(&vault_toml, dest.join("vault.toml"))?;
+        }
         let notes_backup = dest.join("notes");
-        copy_dir_recursive(&self.notes_dir, &notes_backup)?;
+        copy_dir_recursive(notes_dir, &notes_backup)?;
         Ok(dest)
     }
 
@@ -878,27 +892,29 @@ impl Storage {
         let params = crypto::KdfParams::generate();
         let wrapped = key.wrap_with_passphrase(passphrase, &params)?;
 
-        // Pre-flight backup BEFORE touching anything.
-        {
-            let probe = Storage::open(profile_dir, cfg)?;
-            let dest = probe.backup_vault(profile_dir)?;
-            tracing::info!("pre-migration backup at {:?}", dest);
-        }
+        // Pre-flight backup BEFORE touching anything. While it exists it is
+        // a plaintext copy of the whole vault, so it is announced and lives
+        // inside the vault directory; it is deleted again on success.
+        let notes_dir = cfg.resolved_notes_dir(profile_dir);
+        let backup = Self::backup_vault(profile_dir, &notes_dir, &cfg.name, "pre-encrypt")
+            .map_err(|e| anyhow!("creating the pre-migration backup failed: {e:#} — nothing was changed"))?;
+        println!("  Pre-migration backup: {}", backup.display());
 
-        // Flip the config first: subsequent opens require/use the key.
-        cfg.encryption = true;
-        cfg.protection = crate::config::profile::ProtectionSection {
-            kdf: Some(params),
-            wrapped_key_b64: Some(wrapped),
-            keychain_service: None,
-        };
-        cfg.save_to(profile_dir)?;
+        // Everything below is the risky part: if it fails, the backup is the
+        // recovery path, so its location must be part of the error.
+        let migrated = (|| -> Result<()> {
+            // Flip the config first: subsequent opens require/use the key.
+            cfg.encryption = true;
+            cfg.protection = crate::config::profile::ProtectionSection {
+                kdf: Some(params.clone()),
+                wrapped_key_b64: Some(wrapped.clone()),
+                keychain_service: None,
+            };
+            cfg.save_to(profile_dir)?;
 
-        // Re-encrypt note files (plaintext in → ciphertext out). FILE OPS
-        // ONLY — no Storage open here: the on-disk database is still
-        // plaintext at this point, and a keyed open against it fails.
-        {
-            let notes_dir = cfg.resolved_notes_dir(profile_dir);
+            // Re-encrypt note files (plaintext in → ciphertext out). FILE OPS
+            // ONLY — no Storage open here: the on-disk database is still
+            // plaintext at this point, and a keyed open against it fails.
             for path in walk_md_files(&notes_dir)? {
                 let bytes = std::fs::read(&path)?;
                 if !crypto::looks_encrypted(&bytes) {
@@ -906,29 +922,46 @@ impl Storage {
                     std::fs::write(&path, ct)?;
                 }
             }
-        }
 
-        // Rebuild the database inside the SQLCipher envelope.
-        for suffix in ["", "-wal", "-shm"] {
-            let db = profile_dir.join(format!("db.sqlite{suffix}"));
-            if db.exists() {
-                std::fs::remove_file(&db)
-                    .with_context(|| format!("removing {:?}", db))?;
+            // Rebuild the database inside the SQLCipher envelope.
+            for suffix in ["", "-wal", "-shm"] {
+                let db = profile_dir.join(format!("db.sqlite{suffix}"));
+                if db.exists() {
+                    std::fs::remove_file(&db)
+                        .with_context(|| format!("removing {:?}", db))?;
+                }
             }
+            let mut storage = Storage::open_with_key(profile_dir, cfg, Some(&key))?;
+            let stats = storage.reindex_all()?;
+            if stats.errors > 0 {
+                bail!(
+                    "encryption migration finished with {} reindex errors — inspect the vault",
+                    stats.errors
+                );
+            }
+            Ok(())
+        })();
+        match migrated {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&backup);
+                // Remove the backups parent too when this was the last one.
+                let _ = std::fs::remove_dir(profile_dir.join("backups"));
+                println!("  Backup removed (migration completed).");
+                Ok(())
+            }
+            Err(e) => bail!(
+                "{e:#}\n  Nothing was lost: the pre-migration backup at {} holds the vault as it was.",
+                backup.display()
+            ),
         }
-        let mut storage = Storage::open_with_key(profile_dir, cfg, Some(&key))?;
-        let stats = storage.reindex_all()?;
-        if stats.errors > 0 {
-            bail!(
-                "encryption migration finished with {} reindex errors — inspect the vault",
-                stats.errors
-            );
-        }
-        Ok(())
     }
 
     /// Disable at-rest protection: decrypt every note file and rebuild the
     /// database as plaintext. Requires the current passphrase.
+    ///
+    /// Nothing here opens the encrypted database — only files are read and
+    /// written — so this also recovers a vault whose encryption migration was
+    /// interrupted before the database was rebuilt.
     pub fn disable_protection(
         profile_dir: &Path,
         cfg: &mut ProfileConfig,
@@ -949,17 +982,16 @@ impl Storage {
             .ok_or_else(|| anyhow!("vault config missing wrapped master key"))?;
         let key = VaultKey::unwrap_with_passphrase(wrapped, passphrase, kdf)?;
 
-        // Backup before touching anything.
-        {
-            let storage = Storage::open_with_key(profile_dir, cfg, Some(&key))?;
-            let dest = storage.backup_vault(profile_dir)?;
-            tracing::info!("pre-migration backup at {:?}", dest);
-        }
+        // Backup before touching anything: a copy of the encrypted state,
+        // taken from the files directly (no database open).
+        let notes_dir = cfg.resolved_notes_dir(profile_dir);
+        let backup = Self::backup_vault(profile_dir, &notes_dir, &cfg.name, "pre-decrypt")
+            .map_err(|e| anyhow!("creating the pre-migration backup failed: {e:#} — nothing was changed"))?;
+        println!("  Pre-migration backup: {}", backup.display());
 
-        // Decrypt note files (ciphertext in → plaintext out). FILE OPS ONLY —
-        // the migration rebuilds the database afterwards.
-        {
-            let notes_dir = cfg.resolved_notes_dir(profile_dir);
+        let migrated = (|| -> Result<()> {
+            // Decrypt note files (ciphertext in → plaintext out). FILE OPS
+            // ONLY — the migration rebuilds the database afterwards.
             for path in walk_md_files(&notes_dir)? {
                 let bytes = std::fs::read(&path)?;
                 if crypto::looks_encrypted(&bytes) {
@@ -967,36 +999,49 @@ impl Storage {
                     std::fs::write(&path, pt)?;
                 }
             }
-        }
 
-        let keychain_service = cfg.protection.keychain_service.clone();
+            let keychain_service = cfg.protection.keychain_service.clone();
 
-        // Flip the config, then rebuild the database as plaintext.
-        cfg.encryption = false;
-        cfg.protection = crate::config::profile::ProtectionSection::default();
-        cfg.save_to(profile_dir)?;
+            // Flip the config, then rebuild the database as plaintext.
+            cfg.encryption = false;
+            cfg.protection = crate::config::profile::ProtectionSection::default();
+            cfg.save_to(profile_dir)?;
 
-        for suffix in ["", "-wal", "-shm"] {
-            let db = profile_dir.join(format!("db.sqlite{suffix}"));
-            if db.exists() {
-                std::fs::remove_file(&db)
-                    .with_context(|| format!("removing {:?}", db))?;
+            for suffix in ["", "-wal", "-shm"] {
+                let db = profile_dir.join(format!("db.sqlite{suffix}"));
+                if db.exists() {
+                    std::fs::remove_file(&db)
+                        .with_context(|| format!("removing {:?}", db))?;
+                }
             }
-        }
-        let mut storage = Storage::open(profile_dir, cfg)?;
-        let stats = storage.reindex_all()?;
-        if stats.errors > 0 {
-            bail!(
-                "decryption migration finished with {} reindex errors — inspect the vault",
-                stats.errors
-            );
-        }
+            let mut storage = Storage::open(profile_dir, cfg)?;
+            let stats = storage.reindex_all()?;
+            if stats.errors > 0 {
+                bail!(
+                    "decryption migration finished with {} reindex errors — inspect the vault",
+                    stats.errors
+                );
+            }
 
-        // Remove the convenience keychain cache, if any.
-        if let Some(service) = &keychain_service {
-            let _ = VaultKey::remove_from_keychain(service);
+            // Remove the convenience keychain cache, if any.
+            if let Some(service) = &keychain_service {
+                let _ = VaultKey::remove_from_keychain(service);
+            }
+            Ok(())
+        })();
+        match migrated {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&backup);
+                // Remove the backups parent too when this was the last one.
+                let _ = std::fs::remove_dir(profile_dir.join("backups"));
+                println!("  Backup removed (migration completed).");
+                Ok(())
+            }
+            Err(e) => bail!(
+                "{e:#}\n  Nothing was lost: the pre-migration backup at {} holds the vault as it was.",
+                backup.display()
+            ),
         }
-        Ok(())
     }
 
     // ── Category & Favorites ──────────────────────────────────────

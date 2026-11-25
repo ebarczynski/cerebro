@@ -779,3 +779,100 @@ fn profile_create_refuses_the_name_of_an_existing_vault() {
     assert!(stderr.contains("already exists"), "{stderr}");
     assert!(home.join(".cerebro/profiles/personal/vault.toml").exists());
 }
+
+// ── migration backups (2026-11-25 audit, finding 2) ─────────────────
+
+#[test]
+fn migration_leaves_no_backup_behind_after_success() {
+    // The pre-migration backup is a plaintext copy of the whole vault; after
+    // a successful migration nothing plaintext may outlive it, and it must
+    // live inside the vault (so `profile delete` removes it too).
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_dir = tmp.path().join("v");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut cfg = ProfileConfig::new("v");
+    cfg.save_to(&profile_dir).unwrap();
+    let notes = profile_dir.join("notes");
+    fs::write(notes.join("a.md"), "# A\nsecret-9d2e body\n").unwrap();
+
+    Storage::enable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
+    Storage::disable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
+
+    let backups = profile_dir.join("backups");
+    assert!(
+        !backups.exists(),
+        "no backup may survive a completed migration: {:?}",
+        fs::read_dir(backups).map(|d| d.count())
+    );
+    // The round trip itself still works.
+    assert!(fs::read_to_string(notes.join("a.md")).unwrap().contains("secret-9d2e"));
+}
+
+#[test]
+fn an_interrupted_encryption_is_recovered_by_decrypt() {
+    // Repro (2026-11-25 audit, finding 7): the config is flipped first, note
+    // files are converted one by one, and the database is rebuilt last. A
+    // crash in between left a vault that no command could open — "file is
+    // not a database" — even with the correct passphrase.
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_dir = tmp.path().join("v");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut cfg = ProfileConfig::new("v");
+    cfg.save_to(&profile_dir).unwrap();
+    let notes = profile_dir.join("notes");
+
+    // A working plaintext vault with a database…
+    {
+        let mut storage = Storage::open(&profile_dir, &cfg).unwrap();
+        storage.create_note("Alpha", "alpha body f3a1", None, None).unwrap();
+        storage.create_note("Bravo", "bravo body 77c0", None, None).unwrap();
+    }
+    // Snapshot the PLAINTEXT state now, before encrypting: this is what an
+    // interrupted migration has on disk in place of the rebuilt database.
+    let plain = tmp.path().join("plain-snapshot");
+    let _ = fs::remove_dir_all(&plain);
+    copy_dir(&profile_dir, &plain);
+
+    // …then the interrupted state: config flipped, only one of two notes
+    // converted, database NOT yet rebuilt (still plaintext SQLite).
+    Storage::enable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
+    fs::copy(plain.join("db.sqlite"), profile_dir.join("db.sqlite")).unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let _ = fs::copy(plain.join(format!("db.sqlite{suffix}")), profile_dir.join(format!("db.sqlite{suffix}")));
+    }
+    // One note back to plaintext, as if the file loop stopped after Alpha.
+    let bytes = fs::read(notes.join("Bravo.md")).unwrap();
+    assert!(bytes.starts_with(b"CERE1"), "precondition");
+    fs::write(notes.join("Bravo.md"), fs::read_to_string(plain.join("notes/Bravo.md")).unwrap()).unwrap();
+    assert!(cfg.encryption);
+
+    // The recovery: `vault decrypt` with the correct passphrase — which used
+    // to die with "file is not a database" because it opened the stale index.
+    Storage::disable_protection(&profile_dir, &mut cfg, "long-enough-pass").unwrap();
+
+    let mut storage = Storage::open(&profile_dir, &cfg).unwrap();
+    assert_eq!(
+        storage.read_note("Alpha").unwrap().body.contains("alpha body"),
+        true
+    );
+    assert!(storage.read_note("Bravo").unwrap().body.contains("bravo body 77c0"));
+    // And the recovered vault's files are all plaintext again.
+    for name in ["Alpha.md", "Bravo.md"] {
+        let bytes = fs::read(notes.join(name)).unwrap();
+        assert!(!bytes.starts_with(b"CERE1"), "{name} must be plaintext after recovery");
+    }
+}
+
+/// Recursive copy for test fixtures.
+fn copy_dir(src: &std::path::Path, dest: &std::path::Path) {
+    fs::create_dir_all(dest).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let to = dest.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &to);
+        } else {
+            fs::copy(entry.path(), &to).unwrap();
+        }
+    }
+}
