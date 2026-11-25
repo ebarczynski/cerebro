@@ -19,8 +19,10 @@
 pub mod app;
 pub mod error;
 pub mod profile;
+pub mod target;
 
 // Public re-exports for ergonomic access.
 pub use app::{Config, KnowledgePalaceConfig};
 pub use error::{ConfigError, Result};
 pub use profile::{KnowledgePalaceSection, ProfileConfig, SyncMethod, SyncSection, VaultKind};
+pub use target::ProfileTarget;

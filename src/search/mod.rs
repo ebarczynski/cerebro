@@ -1,8 +1,8 @@
-//! Search engine combining SQLite FTS5 for exact keyword search
-//! with configurable hybrid ranking.
+//! Full-text search over the SQLite FTS5 index (ADR 0002).
+//!
+//! A thin named wrapper around [`Storage::search`]; ranking is FTS5's own.
 
 use anyhow::Result;
-use rusqlite::params;
 
 use crate::storage::{SearchResult, Storage};
 

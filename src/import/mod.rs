@@ -3,6 +3,7 @@
 //! Converts external document formats (PDF, PPTX, ODS, XLSX, XLS, DOCX, DOC,
 //! ODT, HTML) into Markdown notes that can be stored in the vault.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -27,10 +28,21 @@ pub enum ImportFormat {
     Json,
 }
 
+/// Every file extension the importer accepts, sorted. Anything here that is
+/// not a document format is imported as plain text / source code.
+const ACCEPTED_EXTENSIONS: &[&str] = &[
+    "adoc", "asciidoc", "bash", "c", "cfg", "cpp", "css", "csv", "dockerfile", "doc", "docx",
+    "fish", "go", "graphql", "h", "hpp", "htm", "html", "ini", "java", "js", "json", "jsonl",
+    "jsx", "less", "log", "makefile", "markdown", "md", "odt", "ods", "pdf", "pptx", "py", "rb",
+    "rs", "rst", "scss", "sh", "sql", "text", "toml", "ts", "tsv", "tsx", "txt", "xml", "xls",
+    "xlsx", "yaml", "yml", "zsh",
+];
+
 impl ImportFormat {
     /// Detect format from file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_ascii_lowercase().as_str() {
+        let ext = ext.to_ascii_lowercase();
+        match ext.as_str() {
             "pdf" => Some(Self::Pdf),
             "pptx" => Some(Self::Pptx),
             "docx" => Some(Self::Docx),
@@ -42,14 +54,8 @@ impl ImportFormat {
             "html" | "htm" => Some(Self::Html),
             "md" | "markdown" => Some(Self::Markdown),
             "json" | "jsonl" => Some(Self::Json),
-            // All other text/code formats
-            "txt" | "text" | "csv" | "tsv" | "yaml" | "yml" | "toml" | "ini" | "cfg"
-            | "xml" | "css" | "scss" | "less" | "log" | "rst" | "asciidoc" | "adoc"
-            | "js" | "ts" | "jsx" | "tsx" | "py" | "rb" | "rs" | "go" | "java"
-            | "c" | "cpp" | "h" | "hpp" | "sh" | "bash" | "zsh" | "fish"
-            | "sql" | "graphql" | "dockerfile" | "makefile"
-            => Some(Self::Text),
-            _ => None,
+            // Everything else that is accepted — text, configuration, source code
+            other => ACCEPTED_EXTENSIONS.contains(&other).then_some(Self::Text),
         }
     }
 
@@ -78,15 +84,10 @@ impl ImportFormat {
         }
     }
 
-    /// All supported file extensions for display.
+    /// All supported file extensions, for display. This is the same list
+    /// that decides what [`Self::from_extension`] accepts.
     pub fn supported_extensions() -> &'static [&'static str] {
-        &[
-            "md", "txt", "json", "csv", "yaml", "yml", "toml",
-            "pdf", "pptx", "docx", "doc", "ods", "xlsx", "xls", "odt",
-            "html", "htm", "xml", "rst",
-            "py", "js", "ts", "rs", "go", "java", "c", "cpp", "sh",
-            "sql", "log",
-        ]
+        ACCEPTED_EXTENSIONS
     }
 }
 
@@ -223,7 +224,14 @@ fn convert_pptx(data: &[u8]) -> Result<String> {
     Ok(md_parts.join("\n\n"))
 }
 
-// ── DOCX → Markdown (via ZIP + XML) ──────────────────────────────
+// ── DOCX → Markdown (via ZIP + XML) ──
+
+/// Is `element` nested inside an element with one of these tag names?
+fn inside_element(element: scraper::ElementRef, names: &[&str]) -> bool {
+    element.ancestors().any(|ancestor| {
+        matches!(ancestor.value(), scraper::Node::Element(inner) if names.contains(&inner.name()))
+    })
+}
 
 fn convert_docx(data: &[u8]) -> Result<String> {
     // DOCX is a ZIP containing word/document.xml with the content
@@ -282,25 +290,28 @@ fn convert_docx(data: &[u8]) -> Result<String> {
         match tag {
             // Paragraph
             "w:p" | "p" => {
+                // A paragraph inside a table cell is rendered with the table.
+                if inside_element(el, &["w:tbl", "tbl"]) {
+                    continue;
+                }
                 // Check for heading style
                 let mut heading_level = 0usize;
 
                 // Look for w:pStyle in child elements
                 let pstyle_sel = scraper::Selector::parse("w\\:pStyle, pStyle").ok();
-                if let Some(sel) = &pstyle_sel {
-                    if let Some(style_el) = el.select(sel).next() {
-                        if let Some(val) = style_el.value().attr("w:val") {
-                            heading_level = match val {
-                                "Heading1" | "heading 1" | "Titre1" => 1,
-                                "Heading2" | "heading 2" | "Titre2" => 2,
-                                "Heading3" | "heading 3" | "Titre3" => 3,
-                                "Heading4" | "heading 4" => 4,
-                                "Heading5" | "heading 5" => 5,
-                                "Heading6" | "heading 6" => 6,
-                                _ => 0,
-                            };
-                        }
-                    }
+                if let Some(sel) = &pstyle_sel
+                    && let Some(style_el) = el.select(sel).next()
+                    && let Some(val) = style_el.value().attr("w:val")
+                {
+                    heading_level = match val {
+                        "Heading1" | "heading 1" | "Titre1" => 1,
+                        "Heading2" | "heading 2" | "Titre2" => 2,
+                        "Heading3" | "heading 3" | "Titre3" => 3,
+                        "Heading4" | "heading 4" => 4,
+                        "Heading5" | "heading 5" => 5,
+                        "Heading6" | "heading 6" => 6,
+                        _ => 0,
+                    };
                 }
 
                 // Extract text from all <w:t> elements inside this paragraph
@@ -327,37 +338,18 @@ fn convert_docx(data: &[u8]) -> Result<String> {
             }
             // Table
             "w:tbl" | "tbl" => {
-                md.push_str("\n\n");
-                let tr_sel = scraper::Selector::parse("w\\:tr, tr").ok();
-                let tc_sel = scraper::Selector::parse("w\\:tc, tc").ok();
-                let t_sel = scraper::Selector::parse("w\\:t, t").ok();
-
-                if let (Some(tr_s), Some(tc_s), Some(t_s)) = (&tr_sel, &tc_sel, &t_sel) {
-                    for (ri, tr) in el.select(tr_s).enumerate() {
-                        let cells: Vec<String> = tr
-                            .select(tc_s)
-                            .map(|tc| {
-                                tc.select(t_s)
-                                    .map(|t_el| t_el.text().collect::<String>())
-                                    .collect::<Vec<_>>()
-                                    .join("")
-                                    .trim()
-                                    .to_string()
-                            })
-                            .collect();
-
-                        if !cells.is_empty() {
-                            md.push_str(&format!("| {} |\n", cells.join(" | ")));
-                            if ri == 0 {
-                                md.push_str(&format!(
-                                    "|{}|\n",
-                                    "| --- ".repeat(cells.len())
-                                ));
-                            }
-                        }
-                    }
-                }
-                md.push('\n');
+                let tr_sel = scraper::Selector::parse("w\\:tr, tr").expect("valid selector");
+                let tc_sel = scraper::Selector::parse("w\\:tc, tc").expect("valid selector");
+                let t_sel = scraper::Selector::parse("w\\:t, t").expect("valid selector");
+                let rows: Vec<Vec<String>> = el
+                    .select(&tr_sel)
+                    .map(|tr| {
+                        tr.select(&tc_sel)
+                            .map(|tc| table_cell(&tc.select(&t_sel).map(|t| t.text().collect::<String>()).collect::<String>()))
+                            .collect()
+                    })
+                    .collect();
+                md.push_str(&markdown_table(&rows));
             }
             _ => {}
         }
@@ -445,40 +437,26 @@ fn convert_spreadsheet<R: calamine::Reader<std::io::Cursor<Vec<u8>>>>(
     let mut workbook: R = calamine::open_workbook_from_rs(cursor)
         .map_err(|e| anyhow::anyhow!("opening spreadsheet: {:?}", e))?;
 
-    let sheet_names = workbook.sheet_names();
-    let sheet_name = sheet_names
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Spreadsheet has no sheets"))?
-        .clone();
-
-    let range = workbook
-        .worksheet_range(&sheet_name)
-        .map_err(|e| anyhow::anyhow!("reading sheet '{}': {:?}", sheet_name, e))?;
-
-    let mut md = format!("## Sheet: {}\n\n", sheet_name);
-
-    let mut rows = range.rows().peekable();
-
-    if let Some(header_row) = rows.peek() {
-        let col_count = header_row.len();
-        if col_count == 0 {
-            return Ok("*This spreadsheet is empty.*".to_string());
+    // Every sheet becomes its own section; empty sheets are skipped.
+    let mut md = String::new();
+    for sheet_name in workbook.sheet_names() {
+        let range = workbook
+            .worksheet_range(&sheet_name)
+            .map_err(|e| anyhow::anyhow!("reading sheet '{}': {:?}", sheet_name, e))?;
+        let rows: Vec<Vec<String>> = range
+            .rows()
+            .map(|row| row.iter().map(|cell| table_cell(&cell.to_string())).collect())
+            .collect();
+        if rows.iter().all(|row| row.iter().all(String::is_empty)) {
+            continue;
         }
-
-        // Header row
-        let header: Vec<String> = header_row.iter().map(|cell| cell.to_string()).collect();
-        md.push_str(&format!("| {} |\n", header.join(" | ")));
-        md.push_str(&format!("|{}|\n", "| --- ".repeat(col_count)));
-
-        rows.next(); // skip header
-
-        for row in rows {
-            let cells: Vec<String> = row.iter().map(|cell| cell.to_string()).collect();
-            md.push_str(&format!("| {} |\n", cells.join(" | ")));
-        }
+        let _ = write!(md, "## Sheet: {sheet_name}\n{}\n", markdown_table(&rows));
     }
 
-    Ok(md)
+    if md.is_empty() {
+        return Ok("*This spreadsheet is empty.*".to_string());
+    }
+    Ok(tidy_markdown(&md))
 }
 
 // ── ODT → Markdown ───────────────────────────────────────────────
@@ -511,24 +489,22 @@ fn convert_odt(data: &[u8]) -> Result<String> {
         bail!("ODT file does not contain content.xml");
     }
 
-    // Parse the XML and extract text with heading levels
-    // ODT uses <text:h text:outline-level="N"> for headings
-    // and <text:p> for paragraphs, <text:span> for inline text
+    // Parse the XML and extract text with heading levels.
+    // ODT uses <text:h text:outline-level="N"> for headings, <text:p> for
+    // paragraphs, <text:span> for inline text, and
+    // table:table > table:table-row > table:table-cell > text:p for tables.
+    // ODT uses namespaces heavily. The scraper might not handle namespaced
+    // selectors, so we fall back to tag-name matching on all elements.
     let document = scraper::Html::parse_document(&content_xml);
 
-    let mut md = String::new();
-
-    // ODT uses namespaces heavily. The scraper might not handle namespaced selectors,
-    // so we fall back to tag-name matching on all elements.
     let star_sel = scraper::Selector::parse("*").expect("valid selector");
 
-    let mut in_table = false;
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-    let mut current_row: Vec<String> = Vec::new();
+    let mut md = String::new();
+    let mut table: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
 
     for el in document.select(&star_sel) {
         let tag = el.value().name();
-
         match tag {
             // ODT heading
             "text:h" | "h" => {
@@ -540,269 +516,468 @@ fn convert_odt(data: &[u8]) -> Result<String> {
                     .min(6);
                 let text: String = el.text().collect();
                 if !text.trim().is_empty() {
-                    md.push_str(&format!(
-                        "\n\n{} {}\n",
-                        "#".repeat(level),
-                        text.trim()
-                    ));
+                    let _ = write!(md, "\n\n{} {}\n", "#".repeat(level), text.trim());
                 }
             }
             // ODT paragraph
             "text:p" | "p" => {
-                // Check if we're inside a table cell
                 let text: String = el.text().collect();
-                if in_table {
-                    current_row.push(text.trim().to_string());
+                if inside_element(el, &["table:table", "table"]) {
+                    // part of the cell we are in
+                    if let Some(cell) = row.last_mut() {
+                        if !cell.is_empty() {
+                            cell.push(' ');
+                        }
+                        cell.push_str(text.trim());
+                    }
                 } else if !text.trim().is_empty() {
                     md.push_str(&format!("\n\n{}\n", text.trim()));
                 }
             }
-            // ODT table
+            // ODT table structure: the table ends where it ends
             "table:table" | "table" => {
-                in_table = true;
-                table_rows.clear();
+                if !row.is_empty() {
+                    table.push(std::mem::take(&mut row));
+                }
+                md.push_str(&markdown_table(&table));
+                table.clear();
             }
             "table:table-row" | "tr" => {
-                if !current_row.is_empty() {
-                    table_rows.push(std::mem::take(&mut current_row));
+                if !row.is_empty() {
+                    table.push(std::mem::take(&mut row));
                 }
             }
-            "table:table-cell" | "td" | "th" => {
-                // Text is collected via text:p above
-            }
+            "table:table-cell" | "td" | "th" => row.push(String::new()),
             _ => {}
         }
     }
 
-    // Flush last table row
-    if !current_row.is_empty() {
-        table_rows.push(current_row);
+    // A table that is not closed in the XML still gets rendered.
+    if !row.is_empty() {
+        table.push(row);
     }
+    md.push_str(&markdown_table(&table));
 
-    // Render table if we found one
-    if !table_rows.is_empty() {
-        md.push_str("\n\n");
-        for (ri, row) in table_rows.iter().enumerate() {
-            md.push_str(&format!("| {} |\n", row.join(" | ")));
-            if ri == 0 && !row.is_empty() {
-                md.push_str(&format!("|{}|\n", "| --- ".repeat(row.len())));
-            }
-        }
-    }
-
-    // Clean up excessive blank lines
-    while md.contains("\n\n\n") {
-        md = md.replace("\n\n\n", "\n\n");
-    }
-
-    let result = md.trim().to_string();
-
+    let result = tidy_markdown(&md);
     if result.is_empty() {
-        return Ok(
-            "*This ODT document contains no extractable text (namespaced XML may need different parsing).*"
-                .to_string(),
-        );
+        return Ok("*This ODT document contains no extractable text.*".to_string());
     }
-
     Ok(result)
 }
 
 // ── HTML → Markdown ──────────────────────────────────────────────
 
+/// Elements that get a line (or more) of their own.
+fn is_block_element(name: &str) -> bool {
+    matches!(
+        name,
+        "address" | "article" | "aside" | "blockquote" | "dd" | "details" | "div" | "dl" | "dt"
+            | "fieldset" | "figcaption" | "figure" | "form" | "h1" | "h2" | "h3" | "h4" | "h5"
+            | "h6" | "header" | "hr" | "main" | "ol" | "p" | "pre" | "section" | "summary"
+            | "table" | "ul"
+    )
+}
+
+/// Page furniture that is never part of the note.
+fn is_boilerplate(name: &str) -> bool {
+    matches!(
+        name,
+        "footer" | "head" | "iframe" | "nav" | "noscript" | "script" | "style" | "svg"
+            | "template" | "title"
+    )
+}
+
 fn convert_html(data: &[u8]) -> Result<String> {
     let html = std::str::from_utf8(data).context("HTML file is not valid UTF-8")?;
-
     let document = scraper::Html::parse_document(html);
 
     let mut md = String::new();
 
-    // Extract title
+    // The page title leads the note.
     let title_sel = scraper::Selector::parse("title").expect("valid selector");
-    if let Some(title_el) = document.select(&title_sel).next() {
-        let title = title_el.text().collect::<String>().trim().to_string();
-        if !title.is_empty() {
-            md.push_str(&format!("# {}\n\n", title));
+    if let Some(title) = document.select(&title_sel).next() {
+        let title = inline_children(title);
+        if !title.trim().is_empty() {
+            let _ = writeln!(md, "# {}\n", title.trim());
         }
     }
 
-    // Extract body text — use select() on body to get element refs
+    // Every element is rendered exactly once: block elements recurse into
+    // their children, inline elements are rendered in place.
     let body_sel = scraper::Selector::parse("body").expect("valid selector");
-    if let Some(body_el) = document.select(&body_sel).next() {
-        // Walk the tree via ElementRef's inner_html + text, simplified approach:
-        // Process direct children of body
-        process_element_children(&document, body_el, &mut md, 0);
-    }
+    let body = document
+        .select(&body_sel)
+        .next()
+        .unwrap_or_else(|| document.root_element());
+    render_block_children(body, &mut md);
 
-    // Clean up excessive blank lines
-    while md.contains("\n\n\n") {
-        md = md.replace("\n\n\n", "\n\n");
-    }
-
-    let result = md.trim().to_string();
-
+    let result = tidy_markdown(&md);
     if result.is_empty() {
-        return Ok("*This HTML document contains no extractable content.*".to_string());
+        Ok("*This HTML document contains no extractable content.*".to_string())
+    } else {
+        Ok(result)
     }
-
-    Ok(result)
 }
 
-/// Process child elements of an ElementRef by iterating with select("*").
-fn process_element_children(
-    doc: &scraper::Html,
-    parent: scraper::element_ref::ElementRef,
-    md: &mut String,
-    depth: usize,
-) {
-    if depth > 50 {
-        return;
-    }
-
-    let all_sel = scraper::Selector::parse("*").expect("valid selector");
-
-    for child in parent.select(&all_sel) {
-        let tag = child.value().name();
-        match tag {
-            "h1" => {
-                md.push_str("\n\n# ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "h2" => {
-                md.push_str("\n\n## ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "h3" => {
-                md.push_str("\n\n### ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "h4" => {
-                md.push_str("\n\n#### ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "h5" => {
-                md.push_str("\n\n##### ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "h6" => {
-                md.push_str("\n\n###### ");
-                md.push_str(&collect_text(child));
-                md.push_str("\n\n");
-            }
-            "p" => {
-                let text = collect_text(child);
-                if !text.trim().is_empty() {
-                    md.push_str("\n\n");
-                    md.push_str(&text);
-                    md.push_str("\n\n");
+/// Render the content of `parent` as a sequence of blocks. Loose text and
+/// inline elements between two blocks form a paragraph.
+fn render_block_children(parent: scraper::ElementRef, md: &mut String) {
+    let mut inline = String::new();
+    for child in parent.children() {
+        match child.value() {
+            scraper::Node::Text(text) => inline.push_str(&collapse_whitespace(text)),
+            scraper::Node::Element(element) => {
+                if is_boilerplate(element.name()) {
+                    continue;
+                }
+                let child_el = scraper::ElementRef::wrap(child).expect("element node");
+                if is_block_element(element.name()) {
+                    push_paragraph(&inline, md);
+                    inline.clear();
+                    render_block(child_el, md);
+                } else {
+                    render_inline_children(child_el, &mut inline);
                 }
             }
-            "br" => {
-                md.push_str("  \n");
+            _ => {}
+        }
+    }
+    push_paragraph(&inline, md);
+}
+
+fn render_block(element: scraper::ElementRef, md: &mut String) {
+    let name = element.value().name();
+    if is_boilerplate(name) {
+        return;
+    }
+    let heading = match name {
+        "h1" => Some(1),
+        "h2" => Some(2),
+        "h3" => Some(3),
+        "h4" => Some(4),
+        "h5" => Some(5),
+        "h6" => Some(6),
+        _ => None,
+    };
+    if let Some(level) = heading {
+        let text = inline_children(element).trim().to_string();
+        if !text.is_empty() {
+            let _ = write!(md, "\n\n{} {text}\n\n", "#".repeat(level));
+        }
+        return;
+    }
+    match name {
+        "p" | "dt" | "dd" | "figcaption" | "summary" => push_paragraph(&inline_children(element), md),
+        "blockquote" => {
+            let mut inner = String::new();
+            render_block_children(element, &mut inner);
+            let quoted = tidy_markdown(&inner)
+                .lines()
+                .map(|line| if line.is_empty() { ">".to_string() } else { format!("> {line}") })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !quoted.is_empty() {
+                let _ = write!(md, "\n\n{quoted}\n\n");
             }
-            "hr" => {
-                md.push_str("\n\n---\n\n");
+        }
+        "pre" => {
+            let code: String = element.text().collect::<Vec<_>>().join("");
+            push_code_block(&code, &code_language(element), md);
+        }
+        "ul" | "ol" => render_list(element, 0, md),
+        "table" => {
+            let tr_sel = scraper::Selector::parse("tr").expect("valid selector");
+            let cell_sel = scraper::Selector::parse("td,th").expect("valid selector");
+            let rows: Vec<Vec<String>> = element
+                .select(&tr_sel)
+                .map(|tr| {
+                    tr.select(&cell_sel)
+                        .map(|cell| table_cell(&inline_children(cell)))
+                        .collect()
+                })
+                .collect();
+            push_table(&rows, md);
+        }
+        "hr" => md.push_str("\n\n---\n\n"),
+        // div, section, article, body, … — and anything we do not know
+        _ => render_block_children(element, md),
+    }
+}
+
+fn render_inline_children(element: scraper::ElementRef, out: &mut String) {
+    for child in element.children() {
+        match child.value() {
+            scraper::Node::Text(text) => out.push_str(&collapse_whitespace(text)),
+            scraper::Node::Element(inner) => {
+                let name = inner.name();
+                let child_el = scraper::ElementRef::wrap(child).expect("element node");
+                match name {
+                    "br" => out.push_str("\\\n"),
+                    "img" => {
+                        let src = inner.attr("src").unwrap_or("");
+                        let alt = collapse_whitespace(inner.attr("alt").unwrap_or(""));
+                        let _ = write!(out, "![{alt}]({src})");
+                    }
+                    "a" => {
+                        // The link's own text (never its children's marks) is
+                        // the link label; the spaces around it stay outside.
+                        let text: String = child_el.text().collect::<Vec<_>>().join("");
+                        let text = collapse_whitespace(&text);
+                        let (href, text) = match inner.attr("href") {
+                            Some(href) if !href.is_empty() => (href.to_string(), text),
+                            _ => (String::new(), text),
+                        };
+                        pad_like(&text, out, |label| {
+                            if href.is_empty() {
+                                label.to_string()
+                            } else {
+                                let target = if href.contains([' ', '(', ')']) {
+                                    format!("<{href}>")
+                                } else {
+                                    href.clone()
+                                };
+                                format!("[{label}]({target})")
+                            }
+                        });
+                    }
+                    "strong" | "b" => wrap_inline(child_el, "**", out),
+                    "em" | "i" => wrap_inline(child_el, "*", out),
+                    "del" | "s" | "strike" => wrap_inline(child_el, "~~", out),
+                    "code" | "kbd" | "samp" => {
+                        let code: String = child_el.text().collect::<Vec<_>>().join("");
+                        let code = code.trim();
+                        if !code.is_empty() {
+                            let fence = if code.contains('`') { "``" } else { "`" };
+                            let _ = write!(out, "{fence}{code}{fence}");
+                        }
+                    }
+                    _ if is_boilerplate(name) => {}
+                    _ => render_inline_children(child_el, out),
+                }
             }
-            "strong" | "b" => {
-                md.push_str("**");
-                md.push_str(&collect_text(child));
-                md.push_str("**");
-            }
-            "em" | "i" => {
-                md.push_str("*");
-                md.push_str(&collect_text(child));
-                md.push_str("*");
-            }
-            "code" => {
-                md.push_str("`");
-                md.push_str(&collect_text(child));
-                md.push_str("`");
-            }
-            "pre" => {
-                md.push_str("\n\n```\n");
-                md.push_str(&collect_text(child));
-                md.push_str("\n```\n\n");
-            }
-            "a" => {
-                let href = child.value().attr("href").unwrap_or("");
-                let text = collect_text(child);
-                md.push_str(&format!("[{}]({})", text, href));
-            }
-            "img" => {
-                let src = child.value().attr("src").unwrap_or("");
-                let alt = child.value().attr("alt").unwrap_or("");
-                md.push_str(&format!("![{}]({})", alt, src));
-            }
-            "ul" | "ol" => {
-                md.push('\n');
-                process_list(doc, child, md, depth, tag == "ol");
-                md.push('\n');
-            }
-            "table" => {
-                process_table(child, md);
-            }
-            // Skip script, style, head, nav, footer
-            "script" | "style" | "nav" | "footer" | "head" => {}
-            _ => {
-                // For other elements, recurse into their children
-                process_element_children(doc, child, md, depth + 1);
-            }
+            _ => {}
         }
     }
 }
 
-fn process_list(
-    doc: &scraper::Html,
-    list_el: scraper::element_ref::ElementRef,
-    md: &mut String,
-    depth: usize,
-    ordered: bool,
-) {
-    let li_sel = scraper::Selector::parse("li").expect("valid selector");
-    let mut counter = 1;
+/// Write `wrap(text.trim())`, keeping one space on each side where `text`
+/// had whitespace, so "Read <a>the docs</a> now" stays one sentence.
+fn pad_like(text: &str, out: &mut String, wrap: impl FnOnce(&str) -> String) {
+    let had_leading = text.starts_with(char::is_whitespace);
+    let had_trailing = text.ends_with(char::is_whitespace);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        if had_leading || had_trailing {
+            out.push(' ');
+        }
+        return;
+    }
+    if had_leading {
+        out.push(' ');
+    }
+    out.push_str(&wrap(trimmed));
+    if had_trailing {
+        out.push(' ');
+    }
+}
 
-    for li in list_el.select(&li_sel) {
-        let prefix = if ordered {
-            let p = format!("{}. ", counter);
-            counter += 1;
-            p
+fn wrap_inline(element: scraper::ElementRef, marks: &str, out: &mut String) {
+    let inner = inline_children(element);
+    pad_like(&inner, out, |trimmed| format!("{marks}{trimmed}{marks}"));
+}
+
+fn inline_children(element: scraper::ElementRef) -> String {
+    let mut out = String::new();
+    render_inline_children(element, &mut out);
+    out
+}
+
+fn render_list(list: scraper::ElementRef, depth: usize, md: &mut String) {
+    let indent = "    ".repeat(depth);
+    let ordered = list.value().name() == "ol";
+    let start: usize = list
+        .value()
+        .attr("start")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let mut index = 0usize;
+    for item in list.children().filter_map(scraper::ElementRef::wrap) {
+        if item.value().name() != "li" {
+            continue;
+        }
+        let marker = if ordered {
+            format!("{}. ", start + index)
         } else {
             "- ".to_string()
         };
-        md.push_str(&prefix);
-        md.push_str(&collect_text(li));
-        md.push('\n');
-    }
-    let _ = (doc, depth);
-}
+        index += 1;
 
-fn process_table(table_el: scraper::element_ref::ElementRef, md: &mut String) {
-    md.push_str("\n\n");
+        // The item's own text, and the blocks nested in it (sub-lists, …).
+        let mut text = String::new();
+        let mut blocks = String::new();
+        for child in item.children() {
+            match child.value() {
+                scraper::Node::Text(t) => text.push_str(&collapse_whitespace(t)),
+                scraper::Node::Element(_) => {
+                    let el = scraper::ElementRef::wrap(child).expect("element node");
+                    let name = el.value().name();
+                    if name == "ul" || name == "ol" {
+                        render_list(el, 0, &mut blocks);
+                    } else if is_block_element(name) {
+                        if matches!(name, "p" | "dd" | "dt" | "figcaption" | "summary") {
+                            text.push(' ');
+                            text.push_str(&inline_children(el));
+                        } else {
+                            render_block(el, &mut blocks);
+                        }
+                    } else {
+                        render_inline_children(el, &mut text);
+                    }
+                }
+                _ => {}
+            }
+        }
 
-    let tr_sel = scraper::Selector::parse("tr").expect("valid selector");
-    let td_sel = scraper::Selector::parse("td,th").expect("valid selector");
-
-    for tr in table_el.select(&tr_sel) {
-        let cells: Vec<String> = tr
-            .select(&td_sel)
-            .map(|cell| collect_text(cell).trim().to_string())
-            .collect();
-
-        if !cells.is_empty() {
-            md.push_str(&format!("| {} |\n", cells.join(" | ")));
+        if text.trim().is_empty() && blocks.trim().is_empty() {
+            continue;
+        }
+        let continuation = format!("{indent}{}", " ".repeat(marker.len()));
+        let first_line = text.lines().next().unwrap_or("").trim();
+        let _ = writeln!(md, "{indent}{marker}{first_line}");
+        for line in text.lines().skip(1) {
+            let line = line.trim();
+            if !line.is_empty() {
+                let _ = writeln!(md, "{continuation}{line}");
+            }
+        }
+        for line in blocks.lines() {
+            if line.trim().is_empty() {
+                md.push('\n');
+            } else {
+                let _ = writeln!(md, "{continuation}{}", line.trim_end());
+            }
         }
     }
-
-    md.push('\n');
 }
 
-/// Collect all text content from an element and its descendants.
-fn collect_text(el: scraper::element_ref::ElementRef) -> String {
-    el.text().collect::<Vec<_>>().join(" ")
+/// The `language-…` class of a `<pre>` or its `<code>`, as a fence hint.
+fn code_language(pre: scraper::ElementRef) -> String {
+    let mut classes = Vec::new();
+    if let Some(class) = pre.value().attr("class") {
+        classes.push(class.to_string());
+    }
+    let code_sel = scraper::Selector::parse("code").expect("valid selector");
+    if let Some(code) = pre.select(&code_sel).next()
+        && let Some(class) = code.value().attr("class")
+    {
+        classes.push(class.to_string());
+    }
+    classes
+        .iter()
+        .flat_map(|class| class.split_whitespace())
+        .find_map(|token| token.strip_prefix("language-"))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Re-flow text outside fenced code blocks: no trailing spaces, and never
+/// more than one blank line between two lines.
+fn tidy_markdown(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    for (index, segment) in md.split("```").enumerate() {
+        if index > 0 {
+            out.push_str("```");
+        }
+        if index % 2 == 1 {
+            // inside a fenced code block: keep the layout
+            out.push_str(segment);
+        } else {
+            tidy_plain(segment, &mut out);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn tidy_plain(text: &str, out: &mut String) {
+    let mut blanks = 0usize;
+    for raw in text.split('\n') {
+        let line = raw.trim_end();
+        if line.is_empty() {
+            blanks += 1;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+            if blanks > 0 {
+                out.push('\n');
+            }
+        }
+        out.push_str(line);
+        blanks = 0;
+    }
+}
+
+fn push_paragraph(inline: &str, md: &mut String) {
+    let text = inline.trim();
+    if !text.is_empty() {
+        let _ = write!(md, "\n\n{text}\n\n");
+    }
+}
+
+fn push_code_block(code: &str, language: &str, md: &mut String) {
+    let code = code.trim_end();
+    if code.is_empty() {
+        return;
+    }
+    let fence = if code.contains("```") { "~~~~" } else { "```" };
+    let _ = write!(md, "\n\n{fence}{language}\n{code}\n{fence}\n\n");
+}
+
+/// One table cell on one line, with the pipe character escaped.
+fn table_cell(text: &str) -> String {
+    text.replace(['\n', '\r'], " ").replace('|', "\\|").trim().to_string()
+}
+
+fn push_table(rows: &[Vec<String>], md: &mut String) {
+    md.push_str(&markdown_table(rows));
+}
+
+/// A GitHub-flavored Markdown table with a well-formed delimiter row.
+fn markdown_table(rows: &[Vec<String>]) -> String {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if columns == 0 {
+        return String::new();
+    }
+    let mut out = String::from("\n\n");
+    for (index, row) in rows.iter().enumerate() {
+        let cells: Vec<&str> = (0..columns)
+            .map(|column| row.get(column).map(String::as_str).unwrap_or(""))
+            .collect();
+        let _ = writeln!(out, "| {} |", cells.join(" | "));
+        if index == 0 {
+            let _ = writeln!(out, "| {} |", vec!["---"; columns].join(" | "));
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// Runs of whitespace are a single space, as in HTML.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !in_space {
+                out.push(' ');
+                in_space = true;
+            }
+        } else {
+            out.push(ch);
+            in_space = false;
+        }
+    }
+    out
 }
 
 // ── Markdown → Markdown (pass-through) ────────────────────────

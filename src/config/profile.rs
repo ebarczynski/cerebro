@@ -304,12 +304,9 @@ impl ProfileConfig {
             ));
         }
 
-        // Reject names that look like path traversals.
-        if self.name.contains("..") || self.name.contains('/') || self.name.contains('\\') {
-            return Err(ConfigError::InvalidProfileName {
-                name: self.name.clone(),
-            });
-        }
+        // Reject names that could name something other than a directory
+        // under profiles_dir.
+        Self::check_name(&self.name)?;
 
         if self.display_name.is_empty() {
             return Err(ConfigError::Validation(

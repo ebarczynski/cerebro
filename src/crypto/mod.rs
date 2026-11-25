@@ -56,7 +56,7 @@ impl KdfParams {
 }
 
 /// The `[protection]` section of a profile's vault.toml.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProtectionConfig {
     pub enabled: bool,
     pub kdf: Option<KdfParams>,
@@ -66,17 +66,6 @@ pub struct ProtectionConfig {
     /// Optional macOS keychain convenience handle (service name). Presence
     /// does NOT change credentials — the passphrase still works alone.
     pub keychain_service: Option<String>,
-}
-
-impl Default for ProtectionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            kdf: None,
-            wrapped_key_b64: None,
-            keychain_service: None,
-        }
-    }
 }
 
 /// An unlocked vault's in-memory key context. Held only while the session

@@ -406,8 +406,12 @@ fn test_link_context_matches_link_line() {
     assert_eq!(bl_b.len(), 1);
     assert_eq!(bl_a[0].context.as_deref(), Some("L1 links [[Target A]]"));
     assert_eq!(bl_b[0].context.as_deref(), Some("L4 links [[Target B]]"));
-    assert_eq!(bl_a[0].line_number, Some(1));
-    assert_eq!(bl_b[0].line_number, Some(4));
+    // Line numbers count from the top of the note FILE. Cerebro wrote three
+    // lines of frontmatter above the body, so the links sit on lines 4 and 7.
+    // (They used to be stored relative to the body passed to create_note,
+    // while a reindex stored them relative to the file.)
+    assert_eq!(bl_a[0].line_number, Some(4));
+    assert_eq!(bl_b[0].line_number, Some(7));
     assert_eq!(bl_a[0].source_id, hub.id);
 }
 
@@ -549,7 +553,10 @@ fn test_mcp_protocol_contract() {
         r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"cerebro_does_not_exist","arguments":{{}}}}}}"#
     )
     .unwrap();
-    drop(stdin);
+    // Close our end so the server sees EOF. (This used to be `drop(stdin)` on
+    // a `&mut` borrow — a no-op; the pipe was only closed later by
+    // `wait_with_output`.)
+    drop(child.stdin.take());
 
     let out = child.wait_with_output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
@@ -618,7 +625,9 @@ fn spawn_mcp_session(
     for l in lines {
         writeln!(stdin, "{l}").unwrap();
     }
-    drop(stdin);
+    // Close our end so the server sees EOF. (Same as above: `drop(stdin)` on
+    // a `&mut` borrow is a no-op.)
+    drop(child.stdin.take());
     let out = child.wait_with_output().unwrap();
     String::from_utf8(out.stdout).unwrap().lines().map(String::from).collect()
 }
