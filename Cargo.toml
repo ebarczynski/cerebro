@@ -1,6 +1,6 @@
 [package]
 name = "cerebro"
-version = "0.5.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.96.0"
 description = "A fast, secure, local-first personal knowledge base with dual-profile vaults and MCP integration"
