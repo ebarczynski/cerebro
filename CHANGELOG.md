@@ -50,6 +50,9 @@ are listed below.
 
 - `cerebro profile create --kind private|business|project` (ADR 0008).
 - `cerebro vault encrypt|decrypt|status`; `cerebro mcp --scope`, `--unlock`.
+- The GUI shows its version in the status bar (`v0.7.0`, bottom right) and
+  the vault menu knows all three kinds — the old two-way toggle silently
+  re-tagged a project vault as business.
 
 ### Fixed (GUI)
 

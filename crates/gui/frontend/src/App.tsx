@@ -1090,8 +1090,14 @@ export default function App() {
   const [editorSearchQuery, setEditorSearchQuery] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [noteTitles, setNoteTitles] = useState<string[]>([]);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The app's own version, shown in the status bar of every screen.
+  useEffect(() => {
+    invoke<string>("app_version").then(setAppVersion).catch(() => {});
+  }, []);
 
   // ── Load vault ─────────────────────────────────────────────
 
@@ -1732,6 +1738,7 @@ export default function App() {
           onSwitchVault={handleSwitchVault}
           onOpenOther={handleOpenVault}
           onSetKind={handleSetVaultKind}
+          version={appVersion}
         />
         {createVaultOpen && (
           <CreateVaultModal onCreate={handleCreateVault} onClose={() => setCreateVaultOpen(false)} />
@@ -2034,6 +2041,7 @@ export default function App() {
         onSwitchVault={handleSwitchVault}
         onOpenOther={handleOpenVault}
         onSetKind={handleSetVaultKind}
+        version={appVersion}
       />
 
       {/* Search modal */}

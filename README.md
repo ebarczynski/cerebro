@@ -105,7 +105,7 @@ cerebro/
 │   ├── sync/                     # Git sync through the `git` CLI
 │   └── cli/                      # clap CLI interface
 ├── crates/gui/                   # Tauri 2 GUI application
-│   ├── src/main.rs               # 43 Tauri commands wired to the core lib
+│   ├── src/main.rs               # 44 Tauri commands wired to the core lib
 │   ├── icons/icon.svg            # Logo design source (brain-circuit mark)
 │   ├── frontend/                 # React 19 + TypeScript frontend
 │   │   ├── src/

@@ -424,6 +424,14 @@ fn vault_is_protected(state: State<AppState>) -> Result<bool, String> {
     Ok(pc_guard.as_ref().map(|pc| pc.encryption).unwrap_or(false))
 }
 
+/// The running app's version (from the crate manifest). Shown in the status
+/// bar so a build's identity is never a guess — released binaries and local
+/// builds used to be indistinguishable.
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 // ── Profile Management ─────────────────────────────────────────
 
 #[tauri::command]
@@ -1433,6 +1441,7 @@ pub fn run() {
             unlock_vault,
             lock_vault,
             vault_is_protected,
+            app_version,
             set_vault_kind,
             list_profiles,
             get_active_profile,
@@ -1742,7 +1751,7 @@ mod tests {
             .and_then(|s| s.split(']').next())
             .expect("generate_handler! list");
         let names: Vec<&str> = registered.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
-        assert_eq!(names.len(), 43, "the README states the number of Tauri commands");
+        assert_eq!(names.len(), 44, "the README states the number of Tauri commands");
         for command in ["init_vault", "open_vault", "create_vault", "reindex", "get_graph", "get_keyword_links"] {
             assert_eq!(names.iter().filter(|n| **n == command).count(), 1, "{command}");
         }
