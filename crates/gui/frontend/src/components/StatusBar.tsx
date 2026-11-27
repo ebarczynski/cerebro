@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export type VaultKindTag = 'private' | 'business';
+export type VaultKindTag = 'private' | 'business' | 'project';
 
 export interface RecentVault {
   path: string;
@@ -24,6 +24,8 @@ interface StatusBarProps {
   onSwitchVault: (entry: RecentVault) => void;
   onOpenOther: () => void;
   onSetKind: (kind: VaultKindTag) => void;
+  /** The app's own version ("0.7.0"), far right — a build's identity is never a guess. */
+  version?: string | null;
 }
 
 // ── Vault kind theming ─────────────────────────────────────────
@@ -32,6 +34,7 @@ interface StatusBarProps {
 export const VAULT_KIND_META: Record<VaultKindTag, { label: string; icon: string; color: string }> = {
   private: { label: 'Private', icon: '🔒', color: '#6366f1' },
   business: { label: 'Business', icon: '💼', color: '#f59e0b' },
+  project: { label: 'Project', icon: '📁', color: '#10b981' },
 };
 
 export function KindBadge({ kind, size }: { kind: VaultKindTag; size: 'sm' | 'lg' }) {
@@ -171,6 +174,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
   onSwitchVault,
   onOpenOther,
   onSetKind,
+  version,
 }) => {
   const syncState = getSyncState(syncStatus);
   const dotColor = getSyncDotColor(syncState);
@@ -203,6 +207,10 @@ const StatusBar: React.FC<StatusBarProps> = ({
   }, [vaultMenuOpen]);
 
   const kindMeta = VAULT_KIND_META[vaultKind];
+  // The vault-menu toggle cycles through ALL kinds — a two-way toggle
+  // silently re-tagged a project vault as business.
+  const KIND_ORDER: VaultKindTag[] = ['private', 'business', 'project'];
+  const nextKind = KIND_ORDER[(KIND_ORDER.indexOf(vaultKind) + 1) % KIND_ORDER.length];
 
   return (
     <div
@@ -318,14 +326,12 @@ const StatusBar: React.FC<StatusBarProps> = ({
                 <button
                   onClick={() => {
                     setVaultMenuOpen(false);
-                    onSetKind(vaultKind === 'business' ? 'private' : 'business');
+                    onSetKind(nextKind);
                   }}
                   className="w-full px-3 py-2 text-left text-xs hover:bg-[#1a1a25] transition-colors"
                   style={{ color: '#a5b4fc' }}
                 >
-                  {vaultKind === 'business'
-                    ? '🔒 Mark as Private'
-                    : '💼 Mark as Business'}
+                  {VAULT_KIND_META[nextKind].icon} Mark as {VAULT_KIND_META[nextKind].label}
                 </button>
               </div>
             </div>
@@ -420,6 +426,16 @@ const StatusBar: React.FC<StatusBarProps> = ({
             {syncLabel}
           </span>
         </div>
+
+        {/* App version */}
+        {version && (
+          <span
+            title="Cerebro version"
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#52525b' }}
+          >
+            v{version}
+          </span>
+        )}
       </div>
     </div>
   );

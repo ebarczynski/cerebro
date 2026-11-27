@@ -26,7 +26,8 @@ use tauri_plugin_dialog::{FileDialogBuilder, DialogExt};
 
 use cerebro::config::app::Config;
 use cerebro::config::profile::{ProfileConfig, VaultKind};
-use cerebro::storage::{Note, NoteContent, SearchResult, Storage};
+use cerebro::crypto::VaultKey;
+use cerebro::storage::{Note, NoteContent, SearchResult, Storage, VAULT_LOCKED_PREFIX};
 
 // ── Application State ──────────────────────────────────────────
 
@@ -41,6 +42,9 @@ pub struct AppState {
     pub watcher: Mutex<Option<RecommendedWatcher>>,
     /// Path of the currently open vault directory (None until a vault is opened).
     pub open_vault_path: Mutex<Option<String>>,
+    /// Unlocked master key of the current vault (ADR 0006). Held ONLY while
+    /// the session is unlocked; dropped by lock_vault and on relock.
+    pub vault_key: Mutex<Option<VaultKey>>,
 }
 
 const NO_VAULT: &str = "No vault open — open a vault first";
@@ -80,15 +84,19 @@ async fn off_main_thread<T: Send + 'static>(
         .map_err(|e| format!("Background task failed: {e}"))?
 }
 
-/// Make a freshly opened vault the current one.
+/// Make a freshly opened vault the current one. `key` is the unlocked master
+/// key of a protected vault, `None` for a plaintext one — so switching from a
+/// protected vault to another vault never leaves the old key behind.
 fn install_vault(
     state: &AppState,
     storage: Storage,
     profile_config: ProfileConfig,
+    key: Option<VaultKey>,
     path: String,
 ) -> Result<(), String> {
     *lock(state.storage.lock())? = Some(Arc::new(Mutex::new(storage)));
     *lock(state.profile_config.lock())? = Some(profile_config);
+    *lock(state.vault_key.lock())? = key;
     *lock(state.open_vault_path.lock())? = Some(path);
     Ok(())
 }
@@ -113,7 +121,18 @@ pub fn load_vault(
     profile_dir: &Path,
     profile_config: &ProfileConfig,
 ) -> Result<(Storage, usize, usize), String> {
-    let mut storage = Storage::open(profile_dir, profile_config).map_err(|e| describe_open_error(e, profile_dir))?;
+    load_vault_with_key(profile_dir, profile_config, None)
+}
+
+/// [`load_vault`] for a protected vault, opened with its unlocked master key
+/// (ADR 0006). Without a key such a vault is refused — `VAULT LOCKED`.
+pub fn load_vault_with_key(
+    profile_dir: &Path,
+    profile_config: &ProfileConfig,
+    key: Option<&VaultKey>,
+) -> Result<(Storage, usize, usize), String> {
+    let mut storage =
+        Storage::open_with_key(profile_dir, profile_config, key).map_err(|e| describe_open_error(e, profile_dir))?;
     // Reindex all notes on open.
     let stats = storage.reindex_all().map_err(|e| format!("Indexing the vault failed: {e:#}"))?;
     let note_count = storage.list_notes(None, 10_000, 0).map_err(|e| e.to_string())?.len();
@@ -299,8 +318,40 @@ async fn init_vault(
         tag_count,
         kind: profile_config.kind.as_tag().to_string(),
     };
-    install_vault(&state, storage, profile_config, info.path.clone())?;
+    install_vault(&state, storage, profile_config, None, info.path.clone())?;
     Ok(info)
+}
+
+/// The master key of a vault the user is opening (ADR 0006): from the
+/// passphrase that was typed, else from the OS keychain convenience cache —
+/// never a prompt from the backend.
+///
+/// `Ok(None)` for a plaintext vault. A protected vault that still needs its
+/// passphrase is an error starting with `VAULT LOCKED`; the frontend answers
+/// it with the unlock dialog.
+pub fn unlock_key(profile_config: &ProfileConfig, passphrase: Option<&str>) -> Result<Option<VaultKey>, String> {
+    if !profile_config.encryption {
+        return Ok(None);
+    }
+    let unlocked = match passphrase {
+        Some(passphrase) => VaultKey::unwrap_from_config(profile_config, passphrase)
+            .map_err(|e| format!("wrong passphrase: {e}")),
+        None => {
+            let from_keychain = profile_config
+                .protection
+                .keychain_service
+                .as_ref()
+                .and_then(|service| VaultKey::from_keychain(service).ok().flatten());
+            match from_keychain {
+                Some(key) => Ok(key),
+                None => Err(format!(
+                    "{}: vault '{}' is locked — passphrase required",
+                    VAULT_LOCKED_PREFIX, profile_config.name
+                )),
+            }
+        }
+    };
+    unlocked.map(Some)
 }
 
 #[tauri::command]
@@ -308,6 +359,7 @@ async fn open_vault(
     state: State<'_, AppState>,
     path: String,
     profile: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<VaultInfo, String> {
     let profile_name = profile.unwrap_or_else(|| "personal".to_string());
     let profile_dir = PathBuf::from(&path);
@@ -319,12 +371,14 @@ async fn open_vault(
     // Reindexing a large vault takes seconds: it happens on a blocking
     // thread, and the vault that was open stays usable until it is done.
     let open_name = profile_name.clone();
-    let (storage, profile_config, note_count, tag_count) =
+    let (storage, profile_config, key, note_count, tag_count) =
         off_main_thread(move || {
             let profile_config =
                 ProfileConfig::load(&profile_dir).unwrap_or_else(|_| ProfileConfig::new(&open_name));
-            let (storage, note_count, tag_count) = load_vault(&profile_dir, &profile_config)?;
-            Ok((storage, profile_config, note_count, tag_count))
+            let key = unlock_key(&profile_config, passphrase.as_deref())?;
+            let (storage, note_count, tag_count) =
+                load_vault_with_key(&profile_dir, &profile_config, key.as_ref())?;
+            Ok((storage, profile_config, key, note_count, tag_count))
         })
         .await?;
 
@@ -336,8 +390,46 @@ async fn open_vault(
         tag_count,
         kind: profile_config.kind.as_tag().to_string(),
     };
-    install_vault(&state, storage, profile_config, path)?;
+    install_vault(&state, storage, profile_config, key, path)?;
     Ok(info)
+}
+
+/// Unlock flow: identical to open_vault with a passphrase — exists so the
+/// frontend lock/unlock UI has an explicit command.
+#[tauri::command]
+async fn unlock_vault(
+    state: State<'_, AppState>,
+    path: String,
+    profile: Option<String>,
+    passphrase: String,
+) -> Result<VaultInfo, String> {
+    open_vault(state, path, profile, Some(passphrase)).await
+}
+
+/// Relock: drop the storage handle and the in-memory key. The vault becomes
+/// locked for every subsequent operation until unlocked again.
+#[tauri::command]
+fn lock_vault(state: State<AppState>) -> Result<(), String> {
+    let mut storage_guard = lock(state.storage.lock())?;
+    *storage_guard = None;
+    let mut key_guard = lock(state.vault_key.lock())?;
+    *key_guard = None;
+    Ok(())
+}
+
+/// True when the current vault is protected (frontend shows the lock UI).
+#[tauri::command]
+fn vault_is_protected(state: State<AppState>) -> Result<bool, String> {
+    let pc_guard = lock(state.profile_config.lock())?;
+    Ok(pc_guard.as_ref().map(|pc| pc.encryption).unwrap_or(false))
+}
+
+/// The running app's version (from the crate manifest). Shown in the status
+/// bar so a build's identity is never a guess — released binaries and local
+/// builds used to be indistinguishable.
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 // ── Profile Management ─────────────────────────────────────────
@@ -365,6 +457,16 @@ async fn create_vault(
         std::fs::create_dir_all(&profile_dir)
             .map_err(|e| format!("Failed to create vault directory at {}: {}", profile_dir.display(), e))?;
 
+        // vault.toml holds the wrapped master key of a protected vault
+        // (ADR 0006): creating over an existing vault would destroy it.
+        // Load the existing vault instead of replacing it.
+        if ProfileConfig::vault_config_path(&profile_dir).exists() {
+            return Err(format!(
+                "A vault already exists at {} — open it instead of creating over it.",
+                profile_dir.display()
+            ));
+        }
+
         let mut profile_config = ProfileConfig::new(&new_name);
         if let Some(kind) = vault_kind {
             profile_config.kind = kind;
@@ -381,7 +483,7 @@ async fn create_vault(
     .await?;
 
     let kind_tag = profile_config.kind.as_tag().to_string();
-    install_vault(&state, storage, profile_config, path.clone())?;
+    install_vault(&state, storage, profile_config, None, path.clone())?;
 
     Ok(VaultInfo {
         name,
@@ -1328,6 +1430,7 @@ pub fn run() {
             profile_config: Mutex::new(None),
             watcher: Mutex::new(None),
             open_vault_path: Mutex::new(None),
+            vault_key: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             home_dir,
@@ -1335,6 +1438,10 @@ pub fn run() {
             pick_directory,
             init_vault,
             open_vault,
+            unlock_vault,
+            lock_vault,
+            vault_is_protected,
+            app_version,
             set_vault_kind,
             list_profiles,
             get_active_profile,
@@ -1644,7 +1751,7 @@ mod tests {
             .and_then(|s| s.split(']').next())
             .expect("generate_handler! list");
         let names: Vec<&str> = registered.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
-        assert_eq!(names.len(), 40, "the README states the number of Tauri commands");
+        assert_eq!(names.len(), 44, "the README states the number of Tauri commands");
         for command in ["init_vault", "open_vault", "create_vault", "reindex", "get_graph", "get_keyword_links"] {
             assert_eq!(names.iter().filter(|n| **n == command).count(), 1, "{command}");
         }

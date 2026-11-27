@@ -13,6 +13,7 @@ use anyhow::Result;
 use super::app::Config;
 use super::error::ConfigError;
 use super::profile::ProfileConfig;
+use crate::crypto::VaultKey;
 use crate::storage::Storage;
 
 /// The profile a command acts on.
@@ -67,10 +68,34 @@ impl Config {
     }
 
     /// Open the index of the profile a command acts on (see [`Self::profile_target`]).
+    ///
+    /// A protected vault (ADR 0006) is refused — `VAULT LOCKED` — because this
+    /// has no key for it; see [`Self::open_storage_unlocked`]. Nothing here
+    /// reads or writes such a vault in plaintext.
     pub fn open_storage(&self, requested: Option<&str>) -> Result<Storage> {
+        self.open_storage_unlocked(requested, |_| Ok(None))
+    }
+
+    /// [`Self::open_storage`] for a protected vault too.
+    ///
+    /// When the vault is protected, `unlock` is asked for its key: it returns
+    /// one, or fails with the reason the vault cannot be unlocked (no
+    /// passphrase given, not unlocked for this MCP session, …). It is not
+    /// called for a plaintext vault, so nothing ever prompts for a vault that
+    /// needs no key.
+    pub fn open_storage_unlocked(
+        &self,
+        requested: Option<&str>,
+        unlock: impl FnOnce(&ProfileConfig) -> Result<Option<VaultKey>>,
+    ) -> Result<Storage> {
         let target = self.profile_target(requested)?;
         let profile_config = ProfileConfig::load_or_default(&target.dir, &target.name)?;
-        let mut storage = Storage::open(&target.dir, &profile_config)?;
+        let key = if profile_config.encryption {
+            unlock(&profile_config)?
+        } else {
+            None
+        };
+        let mut storage = Storage::open_with_key(&target.dir, &profile_config, key.as_ref())?;
         // The index is a cache of the `.md` files: if it is gone, rebuild it.
         storage.rebuild_if_empty()?;
         Ok(storage)

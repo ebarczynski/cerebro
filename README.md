@@ -69,9 +69,9 @@
   layout. The sidebar lists the 500 most recently changed notes; search and
   the graph cover the whole vault.
 - **CLI** — full command-line interface for scripting and automation.
-- **Not implemented: encryption at rest.** Setting `encryption = true` in a
-  vault's configuration is refused with an error rather than silently storing
-  plaintext.
+- **Vault encryption (optional, per vault)** — `.md` notes (AES-256-GCM) and
+  the database (SQLCipher) encrypted at rest, unlocked with an Argon2id
+  passphrase (ADR 0006). See [Security](#security).
 
 ## Installation
 
@@ -105,7 +105,7 @@ cerebro/
 │   ├── sync/                     # Git sync through the `git` CLI
 │   └── cli/                      # clap CLI interface
 ├── crates/gui/                   # Tauri 2 GUI application
-│   ├── src/main.rs               # 40 Tauri commands wired to the core lib
+│   ├── src/main.rs               # 44 Tauri commands wired to the core lib
 │   ├── icons/icon.svg            # Logo design source (brain-circuit mark)
 │   ├── frontend/                 # React 19 + TypeScript frontend
 │   │   ├── src/
@@ -238,6 +238,63 @@ without one the active profile is used — or the one given as
 > While a `cerebro_kp_search` call is waiting on Knowledge Palace (up to 10 s),
 > no other request is answered: the server handles one request at a time.
 
+## Security
+
+Vaults are plaintext unless you protect them (ADR 0006). Protection is
+per-vault and encrypts the `.md` notes (AES-256-GCM) and the database
+(SQLCipher) at rest — attachments, hidden directories and other non-`.md`
+files stay plaintext. The master key is wrapped with Argon2id over your
+passphrase — **there is no recovery code and no reset**: losing the
+passphrase means losing the vault's contents. The passphrase must be at
+least 8 characters; an empty or short one is refused at encryption time.
+
+```bash
+cerebro vault encrypt work        # warns, asks passphrase twice
+cerebro vault status work         # protection status
+cerebro vault decrypt work        # removes protection (needs passphrase)
+```
+
+While the command runs it keeps a backup of the vault *inside the vault
+directory* (`<vault>/backups/…`) — a plaintext copy taken in case the
+migration is interrupted; it is deleted as soon as the migration completes,
+and kept (and named in the error) if something fails. Do not ship the vault
+folder while a backup directory is in it.
+
+- Business vaults: protection recommended — enable right after creation with
+  `cerebro vault encrypt <name>` (a create-time prompt is a planned follow-up).
+- Personal/Project vaults: plaintext by default — encryption never gets in
+  your way unless you turn it on.
+- Unlock lasts for the session; relock happens on system sleep or manually
+  (`Ctrl/Cmd+L` in the GUI). No idle relock.
+- macOS: `--keychain` optionally caches the unlock key behind your user
+  session for convenience. The passphrase remains the only credential.
+
+### MCP sandbox
+
+AI clients get what you declare, nothing more (ADR 0007):
+
+```toml
+[mcp.profiles.work]
+allow = "read"          # none | read | write
+deny_tools = ["cerebro_delete_note"]
+
+[mcp.profiles.personal]
+allow = "none"          # invisible over MCP
+```
+
+- Default: active profile read-only, everything else `none`.
+- `cerebro mcp --scope work:write` overrides for one session.
+- Protected vaults are invisible to MCP unless unlocked at server start
+  (`cerebro mcp --unlock work`).
+- Every call is audited to `~/.cerebro/audit/mcp.jsonl` (timestamp, tool,
+  profile, decision — never note content).
+
+### Contexts
+
+Vault kinds: `private` (personal), `business` (work), `project` — one vault
+per context, isolated at the storage level with independent keys and
+policies (ADR 0008).
+
 ## Configuration
 
 Cerebro has two configuration files.
@@ -262,7 +319,7 @@ Each vault has its own file next to its database and notes:
 name = "personal"
 display_name = "Personal"
 notes_dir = "notes"             # relative to the profile directory, or absolute
-encryption = false              # must stay false: `true` is refused (not implemented)
+encryption = false              # set by `cerebro vault encrypt <name>`; never edit by hand
 kind = "private"                # "private" | "business" — a label the GUI colour-codes
 
 [knowledge_palace]             # read by the GUI's kp_search / kp_health commands
@@ -305,8 +362,6 @@ npm run dev
 cd crates/gui
 frontend/node_modules/.bin/tauri icon icons/icon.png
 ```
-
-## Benchmarks
 
 ## Benchmarks
 
@@ -388,8 +443,10 @@ CEREBRO_BENCH=1 cargo run --release --bench vault_bench -- --sizes 1000,5000,100
 
 Things Cerebro does **not** do (yet), so you can decide whether they matter to you:
 
-- **No encryption at rest.** Notes and the database are plaintext files in
-  your vault directory. `encryption = true` is refused.
+- **Encryption is opt-in, per vault.** A vault is plaintext until you run
+  `cerebro vault encrypt <name>`. That encrypts the `.md` notes and the
+  database — attachments, hidden directories such as `.trash/`, and every
+  other non-`.md` file in the vault stay plaintext.
 - **The GUI sidebar shows at most 500 notes** — the most recently changed
   ones. Full-text search, the graph, the CLI and MCP cover the whole vault.
 - **A vault's metadata is not in the `.md` files.** See below.

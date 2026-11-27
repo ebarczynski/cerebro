@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config::app::Config;
-use crate::config::profile::ProfileConfig;
+use crate::config::profile::{ProfileConfig, VaultKind};
+use crate::crypto::VaultKey;
 use crate::storage::Storage;
 
 #[derive(Parser)]
@@ -104,12 +105,27 @@ pub enum Commands {
     },
 
     /// Start MCP server (stdio)
-    Mcp,
+    Mcp {
+        /// Access override per session: <profile>:<none|read|write> (repeatable)
+        #[arg(long = "scope", value_name = "PROFILE:LEVEL")]
+        scopes: Vec<String>,
+
+        /// Unlock a protected vault for this session (repeatable; prompts
+        /// for each passphrase before serving)
+        #[arg(long = "unlock", value_name = "PROFILE")]
+        unlock: Vec<String>,
+    },
 
     /// Knowledge Palace semantic search
     Kp {
         #[command(subcommand)]
         action: KpCommands,
+    },
+
+    /// Vault protection (encrypt/decrypt — ADR 0006)
+    Vault {
+        #[command(subcommand)]
+        action: VaultCommands,
     },
 
     /// Sync vault with Git remote
@@ -130,6 +146,9 @@ pub enum ProfileCommands {
         /// Display name
         #[arg(long)]
         display_name: Option<String>,
+        /// Ownership kind: private | business | project (ADR 0008)
+        #[arg(long)]
+        kind: Option<String>,
     },
     /// Switch active profile
     Switch {
@@ -215,6 +234,29 @@ pub enum KpCommands {
     Health,
 }
 
+#[derive(Subcommand)]
+pub enum VaultCommands {
+    /// Protect a vault: all notes + database encrypted at rest (ADR 0006)
+    Encrypt {
+        /// Vault (profile) name
+        name: String,
+        /// Also cache the unlock key in the OS keychain (macOS Keychain;
+        /// convenience only — the passphrase remains the credential)
+        #[arg(long)]
+        keychain: bool,
+    },
+    /// Remove protection: decrypt all notes + database
+    Decrypt {
+        /// Vault (profile) name
+        name: String,
+    },
+    /// Show protection status
+    Status {
+        /// Vault (profile) name
+        name: String,
+    },
+}
+
 // ── CLI Runner ───────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -235,7 +277,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::Init { name } => cmd_init(&config, &name),
         Commands::Profile { action } => cmd_profile(&config, action, &config_file),
         Commands::Notes(cmd) => {
-            let mut storage = config.open_storage(requested)?;
+            let mut storage = open_storage(&config, requested)?;
             match cmd {
                 NoteCommands::Create { title, path, tags, content } => {
                     cmd_note_create(&mut storage, &title, path.as_deref(), &tags, content.as_deref(), &config)
@@ -255,39 +297,52 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::Search { query, limit } => {
-            let storage = config.open_storage(requested)?;
+            let storage = open_storage(&config, requested)?;
             cmd_search(&storage, &query, limit)
         }
         Commands::Backlinks { identifier } => {
-            let storage = config.open_storage(requested)?;
+            let storage = open_storage(&config, requested)?;
             cmd_backlinks(&storage, &identifier)
         }
         Commands::Tags { tag } => {
-            let storage = config.open_storage(requested)?;
+            let storage = open_storage(&config, requested)?;
             cmd_tags(&storage, tag.as_deref())
         }
         Commands::Daily { date } => {
-            let mut storage = config.open_storage(requested)?;
+            let mut storage = open_storage(&config, requested)?;
             cmd_daily(&mut storage, &date, &config)
         }
         Commands::Capture { text } => {
-            let mut storage = config.open_storage(requested)?;
+            let mut storage = open_storage(&config, requested)?;
             cmd_capture(&mut storage, &text)
         }
         Commands::Reindex => {
-            let mut storage = config.open_storage(requested)?;
+            let mut storage = open_storage(&config, requested)?;
             cmd_reindex(&mut storage)
         }
         Commands::Import { file, title, tags, path, dry_run } => {
-            let mut storage = config.open_storage(requested)?;
+            let mut storage = open_storage(&config, requested)?;
             cmd_import(&mut storage, &file, title.as_deref(), &tags, path.as_deref(), dry_run)
         }
         // `cerebro --profile work mcp` serves `work` unless a call names a profile.
-        Commands::Mcp => crate::mcp::McpServer::run(config, cli.profile.clone()),
+        Commands::Mcp { scopes, unlock } => {
+            let mut opts = crate::mcp::McpStartOpts::default();
+            for raw in &scopes {
+                let (name, level) = raw.rsplit_once(':').ok_or_else(|| {
+                    anyhow!("invalid --scope '{raw}': expected <profile>:<none|read|write>")
+                })?;
+                let level = crate::config::app::McpAccess::parse(level)
+                    .ok_or_else(|| anyhow!("invalid access level '{level}' in --scope '{raw}'"))?;
+                opts.scopes.push((name.to_string(), level));
+            }
+            opts.unlock = unlock;
+            crate::mcp::McpServer::run(config, cli.profile.clone(), opts)
+        }
         Commands::Kp { action } => {
-            let storage = config.open_storage(requested)?;
+            let storage = open_storage(&config, requested)?;
             cmd_kp(&config, &storage, action)
         }
+        Commands::Vault { action } => cmd_vault(&config, action),
         Commands::Sync { action } => {
             let target = config.profile_target(requested)?;
             cmd_sync(&target.name, &target.dir, action)
@@ -300,9 +355,21 @@ pub fn run(cli: Cli) -> Result<()> {
 fn cmd_init(config: &Config, name: &str) -> Result<()> {
     ProfileConfig::check_name(name)?;
     let profile_dir = config.profiles_dir.join(name);
+    // vault.toml is the only copy of a protected vault's wrapped master key
+    // (ADR 0006): re-running `init` or `profile create` on an existing vault
+    // must never replace it. The old config is the vault's identity, not a
+    // template to overwrite.
+    if ProfileConfig::vault_config_path(&profile_dir).exists() {
+        bail!(
+            "a vault already exists at {} — use it with `cerebro --profile {}`, or pick another name",
+            profile_dir.display(),
+            name
+        );
+    }
     std::fs::create_dir_all(&profile_dir)?;
 
     let profile_config = ProfileConfig::new(name);
+    profile_config.validate()?;
     profile_config.save(&profile_dir)?;
 
     // Create notes directory
@@ -328,14 +395,31 @@ fn cmd_profile(config: &Config, action: ProfileCommands, config_file: &std::path
                 }
             }
         }
-        ProfileCommands::Create { name, display_name } => {
+        ProfileCommands::Create { name, display_name, kind } => {
             cmd_init(config, &name)?;
+            let profile_dir = config.profiles_dir.join(&name);
             if let Some(display_name) = display_name {
-                let profile_dir = config.profiles_dir.join(&name);
                 let mut profile_config = ProfileConfig::load(&profile_dir)?;
                 profile_config.display_name = display_name.clone();
                 profile_config.save(&profile_dir)?;
                 println!("  Display name: {}", display_name);
+            }
+            if let Some(kind) = kind {
+                // from_tag falls back to Private for anything unknown — for a
+                // flag the user typed, a typo must be an error, not a silent
+                // private vault.
+                let new_kind = match kind.trim().to_lowercase().as_str() {
+                    "private" | "personal" => VaultKind::Private,
+                    "business" | "work" | "corporate" => VaultKind::Business,
+                    "project" => VaultKind::Project,
+                    other => bail!(
+                        "unknown kind '{other}': expected private, business, or project"
+                    ),
+                };
+                let mut profile_config = ProfileConfig::load(&profile_dir)?;
+                profile_config.kind = new_kind;
+                profile_config.save(&profile_dir)?;
+                println!("  Kind: {}", new_kind.as_tag());
             }
         }
         ProfileCommands::Switch { name } => {
@@ -720,6 +804,117 @@ fn cmd_sync(profile_name: &str, profile_dir: &std::path::Path, action: SyncComma
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+/// Open the index of the profile a command acts on, unlocking a protected
+/// vault on the way (ADR 0006). The profile rules are the shared ones — see
+/// [`Config::profile_target`].
+fn open_storage(config: &Config, requested: Option<&str>) -> Result<Storage> {
+    config.open_storage_unlocked(requested, |profile_config| {
+        Ok(Some(resolve_vault_key(profile_config)?))
+    })
+}
+
+/// Unlock resolution for a protected vault (ADR 0006): try the keychain
+/// convenience cache first, then prompt for the passphrase. Wrong
+/// passphrase = clear error, no retry loop (friction budget).
+fn resolve_vault_key(profile_config: &ProfileConfig) -> Result<VaultKey> {
+    let name = &profile_config.name;
+    let missing = |what: &str| {
+        anyhow!(
+            "vault '{name}' sets encryption = true but vault.toml has no {what}; \
+             the vault cannot be unlocked — restore vault.toml from a backup"
+        )
+    };
+    if let Some(service) = &profile_config.protection.keychain_service
+        && let Ok(Some(key)) = VaultKey::from_keychain(service)
+    {
+        return Ok(key);
+    }
+    let kdf = profile_config
+        .protection
+        .kdf
+        .as_ref()
+        .ok_or_else(|| missing("protection.kdf (the Argon2id parameters)"))?;
+    let wrapped = profile_config
+        .protection
+        .wrapped_key_b64
+        .as_deref()
+        .ok_or_else(|| missing("protection.wrapped_key_b64 (the wrapped master key)"))?;
+    let passphrase = rpassword::prompt_password(format!("Passphrase for vault '{name}': "))?;
+    VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf)
+        .map_err(|_| anyhow!("wrong passphrase for vault '{name}'"))
+}
+
+fn cmd_vault(config: &Config, action: VaultCommands) -> Result<()> {
+    // A vault named on the command line must exist and be a plain name, like
+    // every other profile argument: a typo must not create a vault.
+    let target_of = |name: &str| config.profile_target(Some(name));
+    match action {
+        VaultCommands::Encrypt { name, keychain } => {
+            let target = target_of(&name)?;
+            let profile_dir = &target.dir;
+            let mut cfg = ProfileConfig::load_or_default(profile_dir, &target.name)?;
+            println!(
+                "⚠ Protecting '{}' encrypts ALL notes and its database at rest.",
+                target.name
+            );
+            println!("  WITHOUT the passphrase the data is UNRECOVERABLE — there is no reset, no recovery code.");
+            let passphrase = rpassword::prompt_password("Choose passphrase: ")?;
+            let confirm = rpassword::prompt_password("Confirm passphrase: ")?;
+            if passphrase != confirm {
+                return Err(anyhow!("passphrases do not match"));
+            }
+            Storage::enable_protection(profile_dir, &mut cfg, &passphrase)?;
+            if keychain {
+                // Re-open is unnecessary: the key is deterministically derivable
+                // from the config we just wrote — unwrap it to cache it.
+                let kdf = cfg.protection.kdf.as_ref().unwrap();
+                let wrapped = cfg.protection.wrapped_key_b64.as_deref().unwrap();
+                let key = VaultKey::unwrap_with_passphrase(wrapped, &passphrase, kdf)?;
+                let service = format!("cerebro.vault.{}", target.name);
+                key.cache_in_keychain(&service)?;
+                cfg.protection.keychain_service = Some(service);
+                cfg.save_to(profile_dir)?;
+                println!("  Keychain convenience cache enabled.");
+            }
+            println!("✓ Vault '{}' is now protected (kind: {:?})", target.name, cfg.kind);
+        }
+        VaultCommands::Decrypt { name } => {
+            let target = target_of(&name)?;
+            let profile_dir = &target.dir;
+            let mut cfg = ProfileConfig::load_or_default(profile_dir, &target.name)?;
+            let passphrase = rpassword::prompt_password(format!(
+                "Passphrase for vault '{}': ",
+                target.name
+            ))?;
+            Storage::disable_protection(profile_dir, &mut cfg, &passphrase)?;
+            println!("✓ Vault '{}' is no longer protected", target.name);
+        }
+        VaultCommands::Status { name } => {
+            let target = target_of(&name)?;
+            let cfg = ProfileConfig::load_or_default(&target.dir, &target.name)?;
+            println!("Vault '{}':", target.name);
+            println!("  Kind:       {:?}", cfg.kind);
+            println!(
+                "  Protection: {}",
+                if cfg.encryption {
+                    format!(
+                        "ENABLED (kdf: Argon2id m={} t={} p={})",
+                        cfg.protection.kdf.as_ref().map(|k| k.m_cost).unwrap_or(0),
+                        cfg.protection.kdf.as_ref().map(|k| k.t_cost).unwrap_or(0),
+                        cfg.protection.kdf.as_ref().map(|k| k.p_cost).unwrap_or(0)
+                    )
+                } else {
+                    "off (plaintext)".to_string()
+                }
+            );
+            if let Some(service) = &cfg.protection.keychain_service {
+                println!("  Keychain:   {} (convenience cache)", service);
+            }
+        }
+    }
+    Ok(())
+}
 
 fn edit_in_editor(content: &str, editor: &str) -> Result<String> {
     // A private copy of the note that disappears afterwards. (One fixed

@@ -73,6 +73,51 @@ pub struct Config {
     /// Knowledge Palace integration settings.
     #[serde(default)]
     pub knowledge_palace: KnowledgePalaceConfig,
+
+    /// MCP access policies per profile (ADR 0007). Absent policy for a
+    /// profile = active profile read-only, others `none`.
+    #[serde(default)]
+    pub mcp: McpSection,
+}
+
+/// MCP access level for a profile.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum McpAccess {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "write")]
+    Write,
+}
+
+impl McpAccess {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpProfilePolicy {
+    #[serde(default = "default_mcp_allow")]
+    pub allow: String,
+    #[serde(default)]
+    pub deny_tools: Vec<String>,
+}
+
+fn default_mcp_allow() -> String {
+    "read".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct McpSection {
+    #[serde(default)]
+    pub profiles: std::collections::HashMap<String, McpProfilePolicy>,
 }
 
 fn default_profile() -> String {
@@ -123,6 +168,7 @@ impl Config {
             profiles_dir: default_profiles_dir(),
             active_profile: None,
             knowledge_palace: KnowledgePalaceConfig::default(),
+            mcp: McpSection::default(),
         })
     }
 
