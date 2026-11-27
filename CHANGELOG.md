@@ -3,7 +3,7 @@
 All notable changes to Cerebro are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
-## [0.7.0] — Unreleased
+## [0.7.0] — 2026-11-27
 
 Vault encryption at rest (ADR 0006), the MCP sandbox and audit journal
 (ADR 0007), project vaults (ADR 0008) — merged with the v0.6.0 audit work

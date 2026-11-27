@@ -170,19 +170,33 @@ jobs:
           for you: write Markdown, link with \`[[wikilinks]]\`, and let keyword
           analysis surface connections you didn't notice. Plain files, no cloud.
 
-          ## 🆕 New in this release
+          ## 🔐 New in v${VERSION} — vault encryption, MCP sandbox, project vaults
 
-          See [CHANGELOG.md](https://github.com/ebarczynski/cerebro/blob/master/CHANGELOG.md).
+          - **Vault encryption at rest** (per vault, opt-in): \`cerebro vault encrypt <vault>\`
+            encrypts every \`.md\` note (AES-256-GCM) and the database (SQLCipher) under an
+            Argon2id passphrase. Unlock in the GUI or CLI; relock on sleep or \`Ctrl/Cmd+L\`.
+            Attachments and non-\`.md\` files stay plaintext. **No recovery code** — losing
+            the passphrase means losing the vault's contents. Minimum 8 characters.
+          - **MCP sandbox + audit journal**: per-vault access policies (none | read | write),
+            every AI tool call audited to \`~/.cerebro/audit/mcp.jsonl\`, locked vaults
+            invisible to MCP. ⚠️ **Breaking:** with no policy declared only the active vault
+            is exposed, read-only — v0.6.0-era clients could read any vault by name. Allow writes with
+            \`[mcp.profiles.<name>] allow = "write"\` in config.toml or
+            \`cerebro mcp --scope <vault>:write\`.
+          - **Project vaults**: a third ownership kind beside Private and Business —
+            \`cerebro profile create <name> --kind project\`, distinct badge and colour.
+          - Dozens of data-safety and correctness fixes from two engineering audits
+            (notes can no longer be overwritten, atomic writes, order-independent link
+            resolution, full MCP protocol compliance, GUI off the main thread) — details in
+            the [CHANGELOG](https://github.com/ebarczynski/cerebro/blob/master/CHANGELOG.md).
 
-          **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search
-          (FTS5) · auto-links between notes that share tags or title words ·
-          knowledge graph · 💠 Obsidian vault import (folder structure,
-          frontmatter tags, wikilinks) · document import (PDF/DOCX/PPTX/XLSX/
-          ODS/ODT/HTML and more) · 🔒/💼 vaults with recents · keyboard shortcuts
-          help (\`?\`) · MCP server · CLI · manual git sync.
+          The GUI shows its version in the status bar (bottom right); the CLI via
+          \`cerebro --version\`.
 
-          Not included: encryption at rest. The GUI lists the 500 most recently
-          changed notes; search covers the whole vault.
+          **Capabilities:** Markdown notes + \`[[wikilinks]]\` · full-text search (FTS5) ·
+          auto-links · knowledge graph · 💠 Obsidian vault import · document import
+          (PDF/DOCX/PPTX/XLSX/ODS/ODT/HTML and more) · 🔒 vault encryption (opt-in) ·
+          private/business/project vaults · MCP server with sandbox · CLI · manual git sync.
 
           ## 🍎 macOS (Apple Silicon) — requires macOS 26 (Tahoe) or newer
 
